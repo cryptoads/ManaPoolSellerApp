@@ -1,0 +1,66 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+*.env
+
+# Google credentials (DO NOT COMMIT)
+credentials.json
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Editor / IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Logs / Temp
+# =========================
+*.log
+*.tmp
+
+# =========================
+# App Data / Generated Files
+# =========================
+seller_state.json
+*.json.backup
+
+# Exported payloads
+manapool_payload_*.json
+
+# =========================
+# CSV / Excel (optional)
+# Comment these out if you WANT to track them
+# =========================
+*.csv
+*.xlsx
+
+# =========================
+# Packaging
+# =========================
+dist/
+build/
+*.spec
+
+# =========================
+# Cache
+# =========================
+.cache/
