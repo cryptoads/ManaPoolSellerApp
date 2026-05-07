@@ -1,381 +1,129 @@
-# ManaPoolSellerApp
-# ManaPool Seller Dashboard
+# 🧙‍♂️ ManaPool Seller Dashboard
 
-A desktop inventory and pricing manager for Magic: The Gathering sellers.
+A desktop tool for managing and selling **Magic: The Gathering** inventory using:
 
-This application connects:
+- 📦 **ManaBox** as the card scanning and collection source
+- 📊 **Google Sheets** as the inventory database
+- 💰 **ManaPool API** for pricing, listing, syncing, and selling workflows
 
-* ManaBox CSV exports
-* Google Sheets
-* ManaPool Seller API
+The app is designed around a simple idea:
 
-The goal is to make it easy to:
-
-* Track inventory
-* Manage listed cards
-* Price and reprice cards
-* Push listings to ManaPool
-* Track sold inventory
-* Keep Google Sheets as the source of truth
+> **Google Sheets is the source of truth.**  
+> The desktop app is the control layer.  
+> ManaPool is the execution layer.
 
 ---
 
-# Features
+## ✨ Features
 
-## Inventory Management
+### 📦 Inventory Management
 
-* Import ManaBox CSV exports
-* Merge new scans into existing inventory
-* Avoid duplicate rows
-* Track quantity owned vs quantity listed
-* Track listed prices
-* Track sold inventory
+- Import ManaBox CSV exports
+- Merge new CSV imports into existing inventory
+- Detect duplicate cards
+- Preserve existing listed prices and listing status
+- Track:
+  - Quantity owned
+  - Quantity listed
+  - Quantity selected to list
+  - Current list price
+  - Current ManaPool listed price
 
-## Google Sheets Integration
+### 📊 Google Sheets Integration
 
-Google Sheets is the primary database.
-
-The app:
-
-* Loads inventory from Google Sheets on startup
-* Writes updates back to Google Sheets
-* Maintains a Sold Inventory tab
-* Persists pricing and listing data
-
-## ManaPool API Integration
+Google Sheets acts as the app database.
 
 The app can:
 
-* Lookup products from ManaPool
-* Refresh best prices
-* Apply smart pricing rules
-* Push inventory updates
-* Sync currently listed inventory from ManaPool
+- Load inventory from Google Sheets on startup
+- Write inventory updates back to Google Sheets
+- Keep active inventory in the main sheet
+- Track sold cards in a separate `Sold Inventory` tab
+- Preserve inventory data between computers
 
-## Smart Pricing
+### 💰 ManaPool Integration
 
-Supports:
+The app can:
 
-* Match Best Price
-* Undercut by $0.01
-* Undercut by %
-* Floor price protection
+- Look up ManaPool products using Scryfall IDs
+- Match variants by language, condition, and finish
+- Refresh best prices
+- Apply smart pricing
+- Push selected listings to ManaPool
+- Sync currently listed inventory from ManaPool
+- Mark sold cards and move them into sold history
 
-## Sales Tracking
+### 🧠 Smart Pricing
 
-Mark inventory as sold.
+Supported pricing modes:
 
-The app:
+- Match best price
+- Undercut best price by `$0.01`
+- Undercut best price by percentage
+- Apply a minimum floor price
 
-* Moves sold data into a Sold Inventory tab
-* Tracks sold quantity
-* Tracks sold price
-* Updates remaining inventory automatically
+### 📈 Sales Tracking
 
----
+When marking a card sold, the app can:
 
-# Application Workflow
-
-## Recommended Workflow
-
-### 1. Scan Cards in ManaBox
-
-Use ManaBox to scan and organize your MTG inventory.
-
-### 2. Export CSV from ManaBox
-
-In ManaBox:
-
-* Export Collection
-* Save CSV
-
-### 3. Import CSV into App
-
-Use:
-
-```text
-Data → Merge CSV
-```
-
-The app will:
-
-* Merge new cards into Google Sheets
-* Increase quantities for duplicates (optional)
-* Preserve listing/pricing data
-
-### 4. Select Cards to Sell
-
-Double-click a row.
-
-This marks:
-
-```text
-Selling = TRUE
-```
-
-### 5. Set Quantity and Price
-
-Inline edit:
-
-* Sell Quantity
-* List Price
-
-OR:
-
-Use:
-
-```text
-Pricing → Refresh Prices
-Pricing → Apply Smart Pricing
-```
-
-### 6. Push to ManaPool
-
-Use:
-
-```text
-Listing → Push API
-```
-
-The app will:
-
-* Match products to ManaPool
-* Push quantity + price
-* Update listed status
-
-### 7. Mark Cards Sold
-
-Use:
-
-```text
-Listing → Mark Sold
-```
-
-The app will:
-
-* Reduce owned quantity
-* Reduce listed quantity
-* Add row to Sold Inventory tab
-* Remove row if quantity becomes zero
+- Ask for quantity sold
+- Ask for sold price
+- Append the sale to the `Sold Inventory` tab
+- Reduce quantity owned
+- Reduce quantity listed
+- Remove the card from active inventory if quantity reaches zero
 
 ---
 
-# Google Sheets Setup
+## 🧭 Recommended Workflow
 
-## Step 1 — Create Google Sheet
-
-Create a Google Sheet.
-
-Recommended name:
-
-```text
-ManaPool
-```
-
-The app uses:
-
-* Sheet1 = active inventory
-* Sold Inventory = sold cards
-
-The Sold Inventory tab is created automatically.
+1. Scan cards in ManaBox.
+2. Export a CSV from ManaBox.
+3. Open the ManaPool Seller Dashboard.
+4. Merge the ManaBox CSV into the app.
+5. Select cards to sell.
+6. Refresh prices from ManaPool.
+7. Apply smart pricing.
+8. Push selected listings to ManaPool.
+9. Mark cards sold when sales happen.
+10. Keep Google Sheets synced as the source of truth.
 
 ---
 
-# Google Cloud / Service Account Setup
+## ⚙️ Installation
 
-The app uses a Google Service Account to access Sheets.
-
-## Step 1 — Create Google Cloud Project
-
-Go to:
-
-[https://console.cloud.google.com/](https://console.cloud.google.com/)
-
-Create a new project.
-
----
-
-## Step 2 — Enable APIs
-
-Enable:
-
-* Google Sheets API
-* Google Drive API
-
----
-
-## Step 3 — Create Service Account
-
-Go to:
-
-```text
-APIs & Services → Credentials
-```
-
-Create:
-
-```text
-Service Account
-```
-
----
-
-## Step 4 — Create JSON Key
-
-Inside the Service Account:
-
-```text
-Keys → Add Key → JSON
-```
-
-Download the JSON file.
-
-Rename it:
-
-```text
-credentials.json
-```
-
-Place it beside:
-
-```text
-ManaPoolInventory.py
-```
-
----
-
-## Step 5 — Share Google Sheet
-
-Open your Google Sheet.
-
-Click:
-
-```text
-Share
-```
-
-Add the service account email from:
-
-```text
-credentials.json
-```
-
-Give:
-
-```text
-Editor access
-```
-
----
-
-# ManaPool API Setup
-
-## Step 1 — Create ManaPool API Token
-
-Go to:
-
-```text
-ManaPool → Integrations / API
-```
-
-Create API credentials.
-
-You will receive:
-
-* Email
-* Access Token
-
----
-
-## Step 2 — Create .env File
-
-Create a file named:
-
-```text
-.env
-```
-
-Place it beside:
-
-```text
-ManaPoolInventory.py
-```
-
-Contents:
-
-```env
-MANAPOOL_API_TOKEN=YOUR_TOKEN_HERE
-MANAPOOL_API_EMAIL=YOUR_EMAIL_HERE
-```
-
-Example:
-
-```env
-MANAPOOL_API_TOKEN=mpat_xxxxxxxxxxxxx
-MANAPOOL_API_EMAIL=youremail@gmail.com
-```
-
-Do NOT use quotes.
-
----
-
-# Python Installation
-
-## Step 1 — Install Python
-
-Download Python:
-
-[https://www.python.org/downloads/](https://www.python.org/downloads/)
-
-Recommended:
-
-```text
-Python 3.12+
-```
-
-IMPORTANT:
-
-During install:
-
-```text
-✔ Add Python to PATH
-```
-
----
-
-# Project Folder Structure
-
-Recommended:
-
-```text
-ManaPool/
-│
-├── ManaPoolInventory.py
-├── credentials.json
-├── .env
-├── requirements.txt
-└── seller_state.json
-```
-
----
-
-# Install Dependencies
-
-Open terminal in the project folder.
-
-Run:
+### 1. Clone the Repository
 
 ```bash
-pip install pandas requests gspread google-auth tkinter
+git clone <your-repo-url>
+cd ManaPool
 ```
 
-If tkinter is missing:
+### 2. Install Python
 
-## Windows
+Install **Python 3.12 or newer**.
 
-Usually included automatically.
+Download Python from:
 
-## Linux
+https://www.python.org/downloads/
+
+During installation, make sure this option is checked:
+
+```text
+Add Python to PATH
+```
+
+### 3. Install Dependencies
+
+From the project folder, run:
+
+```bash
+pip install pandas requests gspread google-auth
+```
+
+Tkinter is usually included with Python on Windows.
+
+If you are on Linux and Tkinter is missing, install it with:
 
 ```bash
 sudo apt install python3-tk
@@ -383,274 +131,652 @@ sudo apt install python3-tk
 
 ---
 
-# Running the Application
+## 📁 Project Structure
 
-Open terminal inside the project folder.
+Recommended folder layout:
 
-Run:
+```text
+ManaPool/
+├── ManaPoolInventory.py
+├── README.md
+├── .gitignore
+├── .env
+├── credentials.json
+└── seller_state.json
+```
 
-```bash
-python ManaPoolInventory.py
+### Important Files
+
+| File | Purpose |
+|---|---|
+| `ManaPoolInventory.py` | Main application |
+| `.env` | ManaPool API credentials |
+| `credentials.json` | Google service account credentials |
+| `README.md` | Project documentation |
+| `seller_state.json` | Local app state, if used |
+
+---
+
+## 📊 Google Sheets Setup
+
+Google Sheets is the app’s database. The app loads from Google Sheets when it starts and writes changes back to Google Sheets when inventory changes.
+
+### Step 1 — Create the Google Sheet
+
+1. Open Google Sheets.
+2. Create a new blank spreadsheet.
+3. Name it exactly:
+
+```text
+ManaPool
+```
+
+4. The first tab is used for active inventory.
+
+You may rename the first tab to:
+
+```text
+Inventory
+```
+
+The app also creates or uses a second tab:
+
+```text
+Sold Inventory
+```
+
+That tab is used for sold cards.
+
+---
+
+### Step 2 — Create a Google Cloud Project
+
+1. Go to Google Cloud Console:
+
+https://console.cloud.google.com/
+
+2. Create a new project.
+3. Give it a name such as:
+
+```text
+ManaPool Inventory App
 ```
 
 ---
 
-# First Startup Checklist
+### Step 3 — Enable Google APIs
 
-On first launch:
+Inside your Google Cloud project, enable these APIs:
 
-## Verify:
+- Google Sheets API
+- Google Drive API
 
-### Google Sheets
-
-* Inventory loads successfully
-* No authentication errors
-
-### ManaPool API
-
-Use:
+You can find them under:
 
 ```text
-⚙️ More → API Test
+APIs & Services → Library
 ```
 
-Verify successful response.
+Search each API name and click **Enable**.
 
-### CSV Import
+---
 
-Use:
+### Step 4 — Create a Service Account
+
+1. Go to:
+
+```text
+APIs & Services → Credentials
+```
+
+2. Click:
+
+```text
+Create Credentials → Service Account
+```
+
+3. Give the service account a name, such as:
+
+```text
+manapool-sheets-service
+```
+
+4. Finish creating the service account.
+
+---
+
+### Step 5 — Create a JSON Key
+
+1. Open the service account you created.
+2. Go to the **Keys** tab.
+3. Click:
+
+```text
+Add Key → Create new key
+```
+
+4. Choose:
+
+```text
+JSON
+```
+
+5. Download the file.
+6. Rename it to:
+
+```text
+credentials.json
+```
+
+7. Place it in the same folder as:
+
+```text
+ManaPoolInventory.py
+```
+
+---
+
+### Step 6 — Share the Google Sheet
+
+1. Open `credentials.json`.
+2. Find the service account email.
+
+It will look something like:
+
+```text
+your-service-account@your-project.iam.gserviceaccount.com
+```
+
+3. Open your Google Sheet.
+4. Click **Share**.
+5. Add the service account email.
+6. Give it **Editor** access.
+
+If you skip this step, the app will not be able to read or write your sheet.
+
+---
+
+## 📦 Using ManaBox
+
+ManaBox is used as your card scanning and collection entry tool.
+
+### Step 1 — Scan Cards in ManaBox
+
+1. Open ManaBox.
+2. Scan cards into your collection.
+3. Review each card and make sure the following fields are correct:
+   - Name
+   - Set
+   - Collector number
+   - Foil or nonfoil
+   - Condition
+   - Language
+   - Quantity
+
+These fields are important because the app uses them to match the correct ManaPool product and variant.
+
+For example, these are different listings:
+
+```text
+English Near Mint Nonfoil
+English Near Mint Foil
+Japanese Near Mint Nonfoil
+English Lightly Played Foil
+```
+
+If the condition, language, or finish is wrong in ManaBox, the app may match the wrong ManaPool variant.
+
+---
+
+### Step 2 — Export a CSV from ManaBox
+
+In ManaBox:
+
+1. Open your collection.
+2. Choose the export option.
+3. Export as CSV.
+4. Save the file locally.
+
+The app expects ManaBox columns such as:
+
+```text
+Name
+Set code
+Set name
+Collector number
+Foil
+Rarity
+Quantity
+ManaBox ID
+Scryfall ID
+Purchase price
+Misprint
+Altered
+Condition
+Language
+Purchase price currency
+```
+
+The most important field is:
+
+```text
+Scryfall ID
+```
+
+The app uses this to look up the card in ManaPool.
+
+---
+
+### Step 3 — Merge the CSV into the App
+
+In the app, use:
 
 ```text
 Data → Merge CSV
 ```
 
-Verify cards appear.
+The app will:
 
----
+- Add new cards to Google Sheets
+- Detect duplicate cards
+- Ask whether to increase quantities
+- Preserve existing list prices
+- Preserve existing listed status
+- Preserve sales tracking data
 
-# UI Overview
-
-## Data
-
-### Reload
-
-Reload inventory from Google Sheets.
-
-### Merge CSV
-
-Import ManaBox export.
-
-### Sync Sheets
-
-Push local changes to Google Sheets.
-
-### Sync MP
-
-Pull current listed inventory from ManaPool.
-
----
-
-## Pricing
-
-### Refresh Prices
-
-Refresh best prices for selected rows.
-
-### Apply Smart Pricing
-
-Apply pricing strategy.
-
-Supports:
-
-* Match Best Price
-* Undercut by $0.01
-* Undercut by %
-
----
-
-## Listing
-
-### Mark Max
-
-Set:
+Recommended habit:
 
 ```text
-Sell Quantity = Quantity Owned - Quantity Listed
+Scan in ManaBox → Export CSV → Merge CSV into app → Sync Sheets
 ```
 
-### Mark Sold
+---
 
-Record sold cards.
+## 🔑 ManaPool API Setup
 
-### Push API
+### Step 1 — Get ManaPool API Credentials
 
-Push selected listings to ManaPool.
+From ManaPool, generate or copy your API credentials from the integrations/API area.
+
+You need:
+
+- ManaPool API token
+- ManaPool account email
 
 ---
 
-## ⚙️ More
+### Step 2 — Create the `.env` File
 
-### API Test
+Create a file named:
 
-Test ManaPool API connection.
+```text
+.env
+```
 
-### Dry Run
+Place it in the same folder as:
 
-Generate JSON payload without pushing.
+```text
+ManaPoolInventory.py
+```
+
+The file should contain:
+
+```env
+MANAPOOL_API_TOKEN=your_token_here
+MANAPOOL_API_EMAIL=your_email_here
+```
+
+Example:
+
+```env
+MANAPOOL_API_TOKEN=mpat_xxxxxxxxxxxxxxxxx
+MANAPOOL_API_EMAIL=you@example.com
+```
+
+Do not use quotes.
+
+Correct:
+
+```env
+MANAPOOL_API_TOKEN=mpat_xxxxxxxxxxxxxxxxx
+```
+
+Incorrect:
+
+```env
+MANAPOOL_API_TOKEN="mpat_xxxxxxxxxxxxxxxxx"
+```
 
 ---
 
-# Inventory Fields Explained
+## ▶️ Running the Application
 
-| Field           | Meaning                             |
-| --------------- | ----------------------------------- |
-| Quantity Owned  | Total copies owned                  |
+From the project folder, run:
+
+```bash
+python ManaPoolInventory.py
+```
+
+On startup, the app will try to load inventory from Google Sheets.
+
+---
+
+## 🖥️ UI Overview
+
+### Data
+
+Data actions control Google Sheets and ManaBox imports.
+
+| Button | Purpose |
+|---|---|
+| Reload Sheets | Reload inventory from Google Sheets |
+| Merge CSV | Merge a ManaBox CSV export |
+| Sync Sheets | Write local app data back to Google Sheets |
+| Sync MP | Pull current listings from ManaPool |
+
+---
+
+### Pricing
+
+Pricing actions help determine and apply list prices.
+
+| Button | Purpose |
+|---|---|
+| Refresh Prices | Pull best price data for selected rows |
+| Apply Smart Pricing | Apply selected pricing strategy to selected rows |
+
+---
+
+### Listing
+
+Listing actions affect ManaPool inventory and sales state.
+
+| Button | Purpose |
+|---|---|
+| Mark Max | Mark all available unlisted copies for sale |
+| Mark Sold | Record a completed sale |
+| Push API | Push selected listings to ManaPool |
+
+---
+
+### More
+
+Debug and developer tools.
+
+| Item | Purpose |
+|---|---|
+| API Test | Test ManaPool authentication |
+| Dry Run | Generate JSON payload without pushing |
+
+---
+
+## 🧾 Inventory Fields
+
+| Field | Description |
+|---|---|
+| Quantity Owned | Total copies you own |
 | Quantity Listed | Copies currently listed on ManaPool |
-| Sell Quantity   | Copies to push in next API action   |
-| Best Price      | Current best market price           |
-| List Price      | Price you intend to list at         |
-| Listed Price    | Actual live ManaPool listing price  |
-| Selling         | Selected for current actions        |
-| Is Listed       | Currently listed on ManaPool        |
+| Sell Quantity | Copies selected to push in the next listing action |
+| Best Price | Current best price from ManaPool |
+| List Price | Price you intend to push |
+| Listed Price | Price currently live on ManaPool |
+| Selling | Selected for the current action |
+| Is Listed | Currently listed on ManaPool |
+| ManaPool Product ID | ManaPool product identifier |
+| TCGPlayer Product ID | TCGPlayer product ID |
+| TCGPlayer SKU | TCGPlayer SKU used by ManaPool |
+| Last Listed | Timestamp of last successful listing push |
+| Best Price Updated | Timestamp of last price refresh |
+| Listed Price Updated | Timestamp of last listed price update |
 
 ---
 
-# Smart Pricing Explained
+## 💰 Smart Pricing Logic
 
-## Match Best Price
+### Match Best Price
 
 ```text
 List Price = Best Price
 ```
 
-## Undercut by $0.01
+### Undercut by $0.01
 
 ```text
 List Price = Best Price - 0.01
 ```
 
-## Undercut by %
+### Undercut by Percentage
 
 ```text
-List Price = Best Price * (1 - percent)
+List Price = Best Price * (1 - percent / 100)
 ```
 
-## Floor Price
+### Floor Price
 
-Prevents pricing below minimum threshold.
+The app prevents smart pricing from going below your configured floor price.
+
+```text
+Final Price = max(calculated price, floor price)
+```
 
 ---
 
-# Common Problems
+## 📤 Listing Flow
 
-## 401 Unauthorized
+To list cards:
 
-Verify:
+1. Select one or more rows.
+2. Set `Sell Quantity`.
+3. Set `List Price`.
+4. Click `Push API`.
 
-* .env exists
-* token is correct
-* email is correct
-* no quotes around values
+The app will:
 
-Example:
+- Look up the ManaPool product
+- Match the correct variant by language, condition, and finish
+- Build the inventory payload
+- Push the listing to ManaPool
+- Update Google Sheets with:
+  - Is Listed
+  - Quantity Listed
+  - Listed Price
+  - Last Listed
+
+---
+
+## ✅ Marking Cards Sold
+
+To record a sale:
+
+1. Select the row.
+2. Click `Mark Sold`.
+3. Enter quantity sold.
+4. Enter sold price.
+
+The app will:
+
+- Append the sale to the `Sold Inventory` tab
+- Reduce `Quantity Owned`
+- Reduce `Quantity Listed`
+- Remove the row from active inventory if no copies remain
+
+---
+
+## 🔄 ManaPool Sync
+
+`Sync MP` pulls inventory currently listed on ManaPool.
+
+It updates matching rows with:
+
+- Is Listed
+- Quantity Listed
+- Listed Price
+- ManaPool Product ID
+- TCGPlayer Product ID
+- TCGPlayer SKU
+
+If a ManaPool item is not in your sheet, the app can add it as a new row.
+
+Sealed products may be skipped unless sealed product support is added.
+
+---
+
+## ⚠️ Troubleshooting
+
+### 401 Unauthorized
+
+Check:
+
+- `.env` exists
+- Token is correct
+- Email is correct
+- Values are not wrapped in quotes
+
+Correct:
 
 ```env
 MANAPOOL_API_TOKEN=mpat_xxxxx
-MANAPOOL_API_EMAIL=me@gmail.com
+MANAPOOL_API_EMAIL=you@example.com
 ```
 
 ---
 
-## Google Sheets Permission Error
+### Google Sheets Permission Error
 
-Verify:
+Check:
 
-* credentials.json exists
-* Google Sheet shared with service account
-* APIs enabled
+- `credentials.json` exists
+- Google Sheets API is enabled
+- Google Drive API is enabled
+- Sheet is shared with the service account email
+- Service account has Editor access
 
 ---
 
-## Duplicate Inventory Rows
+### Google Sheet Does Not Load
 
-Usually caused by:
-
-* mismatched condition/language/foil data
-* importing same inventory multiple times
-
-Use:
+Check that the sheet is named:
 
 ```text
-Sync MP
+ManaPool
 ```
 
-to normalize listing state.
+If you changed the name, update the `SHEET_NAME` constant in the code.
 
 ---
 
-## No Prices Returned
+### Duplicate Rows
 
-Usually caused by:
+Duplicates are usually caused by mismatched card identity fields:
 
-* missing Scryfall ID
-* unsupported language variant
-* sealed product
+- Scryfall ID
+- Set code
+- Collector number
+- Foil status
+- Condition
+- Language
 
----
-
-# Recommended Backup Strategy
-
-Back up:
-
-* Google Sheet
-* credentials.json
-* .env
-* seller_state.json
-
-Do NOT commit:
-
-* .env
-* credentials.json
-
-into public Git repositories.
+Make sure ManaBox data is accurate before exporting.
 
 ---
 
-# Future Improvements
+### Missing Prices
 
-Planned ideas:
+Common causes:
 
-* Inline quantity editing
-* Profit tracking
-* Auto repricing
-* ManaPool inventory reconciliation
-* Sealed product support
-* Analytics dashboard
-* Profit/loss tracking
-* Sales charts
-* Bulk repricing
-* Right-click context menus
-* Auto update checks
+- Missing Scryfall ID
+- Unsupported language
+- Token or sealed product
+- ManaPool does not have pricing for that exact variant
 
 ---
 
-# Recommended Daily Workflow
+### Wrong Variant Matched
+
+Check:
+
+- Language
+- Condition
+- Foil status
+- Collector number
+
+The app matches ManaPool variants using those fields.
+
+---
+
+## 🔐 Security
+
+Never commit these files:
 
 ```text
-1. Scan cards in ManaBox
-2. Export CSV
-3. Merge CSV into app
-4. Select cards to sell
-5. Refresh Prices
-6. Apply Smart Pricing
-7. Push API
-8. Mark Sold when sales happen
+.env
+credentials.json
+```
+
+They contain private credentials.
+
+Recommended `.gitignore` entries:
+
+```gitignore
+.env
+credentials.json
+__pycache__/
+*.pyc
+seller_state.json
+*.csv
+*.xlsx
+manapool_payload_*.json
 ```
 
 ---
 
-# License / Notes
+## 🧪 Developer Notes
 
-This project is intended for personal inventory and seller workflow management.
+### Main Concepts
 
-Always verify pricing and quantities before pushing live inventory updates.
+```text
+Google Sheets = source of truth
+Desktop app = control layer
+ManaPool = execution/listing layer
+ManaBox = scanning/import source
+```
+
+### Important Matching Fields
+
+The app uses this combination to identify card rows:
+
+```text
+Scryfall ID
+Set code
+Collector number
+Foil
+Condition
+Language
+```
+
+### Recommended Future Improvements
+
+- Profit tracking
+- Sales analytics
+- Sealed product support
+- Bulk repricing
+- Better duplicate cleanup tools
+- Pricing alerts
+- Exportable reports
+- Right-click row actions
+- Installer packaging
+
+---
+
+## 🏁 TL;DR
+
+```text
+Scan in ManaBox
+→ Export CSV
+→ Merge into app
+→ Refresh prices
+→ Apply pricing
+→ Push to ManaPool
+→ Mark sold
+→ Track everything in Google Sheets
+```
