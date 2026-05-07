@@ -436,22 +436,25 @@ class SheetsClient:
 
         existing = sold_sheet.get_all_values()
 
+        # If sheet is empty, create the header.
         if not existing:
-            sold_sheet.update("A1", [headers])
+            sold_sheet.update(range_name="A1", values=[headers])
+            next_row = 2
         else:
-            first_row = existing[0]
-            if first_row[:len(headers)] != headers:
-                sold_sheet.clear()
-                sold_sheet.update("A1", [headers])
+            # Do NOT clear existing sold inventory.
+            # If headers differ, still append using our fixed column order.
+            next_row = len(existing) + 1
+
+            # If A1 is blank for some reason, write headers without deleting rows.
+            if not existing[0] or not any(existing[0]):
+                sold_sheet.update(range_name="A1", values=[headers])
+                next_row = max(2, next_row)
 
         row_values = [safe(sold_row.get(col, "")) for col in headers]
 
-        next_row = len(sold_sheet.get_all_values()) + 1
-        end_col = chr(ord("A") + len(headers) - 1)
-
         sold_sheet.update(
-            f"A{next_row}:{end_col}{next_row}",
-            [row_values]
+            range_name=f"A{next_row}:S{next_row}",
+            values=[row_values]
         )
 
 # ============================================================
@@ -1012,6 +1015,8 @@ class ManaPoolSellerDashboard:
             single = {}
 
         quantity = safe_int(inv.get("quantity"))
+        if quantity <= 0:
+             return None
         price = round(safe_int(inv.get("price_cents")) / 100, 2)
 
         finish_id = safe(single.get("finish_id")).upper()
