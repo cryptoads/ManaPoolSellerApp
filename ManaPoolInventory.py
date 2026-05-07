@@ -1598,6 +1598,21 @@ class ManaPoolSellerDashboard:
 
 
 if __name__ == "__main__":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "ManaPool.SellerDashboard.GoblinIcon.1"
+        )
+    except Exception:
+        pass
+
     root = tk.Tk()
+
+    try:
+        icon_path = os.path.join(os.path.dirname(__file__), "app.ico")
+        root.iconbitmap(default=icon_path)
+    except Exception as exc:
+        print("Icon load failed:", exc)
+
     app = ManaPoolSellerDashboard(root)
     root.mainloop()
