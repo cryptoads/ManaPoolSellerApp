@@ -494,6 +494,15 @@ class ManaPoolAPI:
 
     def test_connection(self):
         return self.request("GET", "/seller/orders", params={"limit": 1})
+    
+    def build_unlist_payload(self, df):
+        payload = self.build_inventory_payload(df)
+
+        for item in payload.get("items", []):
+            inventory = item.get("inventory", {})
+            inventory["quantity"] = 0
+
+        return payload
 
     def lookup_single_product(self, row):
         scryfall_id = safe(row.get("Scryfall ID"))
@@ -709,9 +718,10 @@ class ManaPoolSellerDashboard:
         # ---- LISTING GROUP ----
         listing_frame = tk.LabelFrame(actions, text="Listing", bg="#111827", fg="#e5e7eb")
         listing_frame.pack(side=tk.LEFT, padx=4)
-
+        self.button(listing_frame, "Select Listed", self.select_all_listed).pack(side=tk.LEFT, padx=2)
         self.button(listing_frame, "Mark Max", self.mark_selected_max_for_sale).pack(side=tk.LEFT, padx=2)
         self.button(listing_frame, "Mark Sold", self.mark_selected_sold).pack(side=tk.LEFT, padx=2)
+        self.button(listing_frame, "Unlist Selected", self.unlist_selected_from_manapool).pack(side=tk.LEFT, padx=2)
         self.button(listing_frame, "Push API", self.api_push_selected, primary=True).pack(side=tk.LEFT, padx=2)
 
         menu_button = tk.Menubutton(actions, text="⚙️ More", bg="#374151", fg="#fff", relief=tk.FLAT)
@@ -848,7 +858,80 @@ class ManaPoolSellerDashboard:
             self.edit_cell(row_id, column_name)
         else:
             self.toggle_selected_row()
+    def select_all_listed(self):
+        if self.df.empty:
+            return
 
+        count = 0
+
+        for idx, row in self.df.iterrows():
+            if bool_from_value(row.get("Is Listed")) and safe_int(row.get("Quantity Listed")) > 0:
+                self.df.at[idx, "Selling"] = "TRUE"
+                count += 1
+
+        self.apply_filters(keep_status=True)
+        self.set_status(f"Selected {count} currently listed rows.")
+
+    def unlist_selected_from_manapool(self):
+        if self.df.empty:
+            return
+
+        selected = self.df[
+            self.df["Selling"].apply(bool_from_value)
+            & self.df["Is Listed"].apply(bool_from_value)
+            & (self.df["Quantity Listed"].apply(safe_int) > 0)
+        ].copy()
+
+        if selected.empty:
+            messagebox.showwarning(
+                "No Listed Rows Selected",
+                "Select listed rows first. Use Select Listed, then remove any cards you do not want to unlist."
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Confirm Unlist",
+            f"This will set quantity to 0 for {len(selected)} selected ManaPool listings.\n\nContinue?"
+        ):
+            return
+
+        try:
+            payload = self.manapool_api.build_unlist_payload(selected)
+
+            if payload.get("warnings"):
+                proceed = messagebox.askyesno(
+                    "Unlist Warnings",
+                    f"{len(payload['warnings'])} selected rows had product mapping warnings.\n\n"
+                    "Only mapped rows can be unlisted reliably.\n\nContinue anyway?"
+                )
+                if not proceed:
+                    return
+
+            result = self.manapool_api.push_inventory(payload)
+
+            now = datetime.now().isoformat()
+
+            for idx in selected.index:
+                self.df.at[idx, "Is Listed"] = "FALSE"
+                self.df.at[idx, "Quantity Listed"] = "0"
+                self.df.at[idx, "Listed Price"] = ""
+                self.df.at[idx, "Listed Price Updated"] = now
+                self.df.at[idx, "Selling"] = "FALSE"
+                self.df.at[idx, "Sell Quantity"] = "0"
+                self.df.at[idx, "Last Updated"] = now
+
+            self.df = normalize_ledger_df(self.df)
+            self.sheets.write_inventory(self.df)
+            self.apply_filters(keep_status=True)
+
+            messagebox.showinfo(
+                "Unlist Complete",
+                f"Unlisted {len(selected)} rows from ManaPool."
+            )
+
+        except Exception as exc:
+            self.log_output(f"Unlist Failed: {exc}")
+            messagebox.showerror("Unlist Failed", str(exc))
 
     def edit_cell(self, row_id, column_name):
         idx = int(row_id)
