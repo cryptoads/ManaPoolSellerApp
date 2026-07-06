@@ -691,8 +691,47 @@ class ManaPoolSellerDashboard:
         style.map("Treeview", background=[("selected", "#2563eb")])
         style.configure("Treeview.Heading", background="#1f2937", foreground="#f9fafb", font=("Segoe UI", 9, "bold"))
 
-    def button(self, parent, text, command, primary=False):
-        return tk.Button(
+    def add_tooltip(self, widget, text):
+        if not text:
+            return
+
+        tooltip = {"window": None}
+
+        def show_tooltip(event=None):
+            if tooltip["window"] is not None:
+                return
+            x = widget.winfo_rootx() + 10
+            y = widget.winfo_rooty() + widget.winfo_height() + 6
+            window = tk.Toplevel(widget)
+            window.wm_overrideredirect(True)
+            window.wm_geometry(f"+{x}+{y}")
+            label = tk.Label(
+                window,
+                text=text,
+                bg="#111827",
+                fg="#f9fafb",
+                relief=tk.SOLID,
+                borderwidth=1,
+                padx=8,
+                pady=5,
+                justify=tk.LEFT,
+                wraplength=320,
+                font=("Segoe UI", 9),
+            )
+            label.pack()
+            tooltip["window"] = window
+
+        def hide_tooltip(event=None):
+            if tooltip["window"] is not None:
+                tooltip["window"].destroy()
+                tooltip["window"] = None
+
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)
+        widget.bind("<ButtonPress>", hide_tooltip)
+
+    def button(self, parent, text, command, primary=False, tooltip=None):
+        button = tk.Button(
             parent,
             text=text,
             command=command,
@@ -705,6 +744,8 @@ class ManaPoolSellerDashboard:
             pady=5,
             font=("Segoe UI", 9, "bold"),
         )
+        self.add_tooltip(button, tooltip)
+        return button
 
     def build_ui(self):
         header = tk.Frame(self.root, bg="#111827")
@@ -776,31 +817,43 @@ class ManaPoolSellerDashboard:
 
         collection_actions = tk.Frame(collection_tab, bg="#111827")
         collection_actions.pack(fill=tk.X, padx=8, pady=8)
-        self.button(collection_actions, "Reload", self.load_from_google_sheets).pack(side=tk.LEFT, padx=2)
-        self.button(collection_actions, "Merge CSV", self.import_csv).pack(side=tk.LEFT, padx=2)
-        self.button(collection_actions, "Sync Sheets", self.sync_sheets).pack(side=tk.LEFT, padx=2)
-        self.button(collection_actions, "Mark Max", self.mark_selected_max_for_sale).pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Reload", self.load_from_google_sheets, tooltip="Reload inventory from Google Sheets.").pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Merge CSV", self.import_csv, tooltip="Import a ManaBox CSV and merge new cards into the sheet.").pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Sync Sheets", self.sync_sheets, tooltip="Write the current local table back to Google Sheets.").pack(side=tk.LEFT, padx=2)
+        self.button(
+            collection_actions,
+            "Mark Max",
+            self.mark_selected_max_for_sale,
+            tooltip="For the focused row, set Sell Quantity to Quantity Owned minus Quantity Listed and mark it for sale.",
+        ).pack(side=tk.LEFT, padx=2)
+        self.button(
+            collection_actions,
+            "Push API",
+            self.api_push_selected,
+            primary=True,
+            tooltip="Push rows marked Selling with Sell Quantity and List Price to ManaPool.",
+        ).pack(side=tk.LEFT, padx=2)
 
         listed_actions = tk.Frame(listed_tab, bg="#111827")
         listed_actions.pack(fill=tk.X, padx=8, pady=8)
-        self.button(listed_actions, "Sync MP", self.sync_from_manapool).pack(side=tk.LEFT, padx=2)
-        self.button(listed_actions, "Select Listed", self.select_all_listed).pack(side=tk.LEFT, padx=2)
-        self.button(listed_actions, "Refresh Prices", self.refresh_best_prices).pack(side=tk.LEFT, padx=2)
-        self.button(listed_actions, "Smart Price", self.update_listed_prices_to_best).pack(side=tk.LEFT, padx=2)
-        self.button(listed_actions, "Unlist Selected", self.unlist_selected_from_manapool).pack(side=tk.LEFT, padx=2)
-        self.button(listed_actions, "Push API", self.api_push_selected, primary=True).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Sync MP", self.sync_from_manapool, tooltip="Pull currently listed ManaPool inventory and update matching rows.").pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Select Listed", self.select_all_listed, tooltip="Mark every currently listed row as Selling so it can be repriced, pushed, or unlisted.").pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Refresh Prices", self.refresh_best_prices, tooltip="Fetch best ManaPool pricing for rows marked Selling.").pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Smart Price", self.update_listed_prices_to_best, tooltip="Update List Price for rows marked Selling using the selected pricing rule.").pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Unlist Selected", self.unlist_selected_from_manapool, tooltip="Set ManaPool quantity to 0 for listed rows marked Selling.").pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Push API", self.api_push_selected, primary=True, tooltip="Push rows marked Selling with Sell Quantity and List Price to ManaPool.").pack(side=tk.LEFT, padx=2)
 
         sold_actions = tk.Frame(sold_tab, bg="#111827")
         sold_actions.pack(fill=tk.X, padx=8, pady=8)
-        self.button(sold_actions, "Mark Sold", self.mark_selected_sold).pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Mark Sold", self.mark_selected_sold, tooltip="Manually record a sale, append it to Sold Inventory, and reduce owned/listed quantity.").pack(side=tk.LEFT, padx=2)
         tk.Label(sold_actions, text="Import as-of", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
         tk.Entry(sold_actions, textvariable=self.sold_import_as_of_var, width=12).pack(side=tk.LEFT, padx=2)
-        self.button(sold_actions, "Review Sold", self.review_sold_import).pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Review Sold", self.review_sold_import, tooltip="Prepare the approval-first ManaPool sold import workflow using the as-of date.").pack(side=tk.LEFT, padx=2)
 
         tools_actions = tk.Frame(tools_tab, bg="#111827")
         tools_actions.pack(fill=tk.X, padx=8, pady=8)
-        self.button(tools_actions, "API Test", self.api_test_connection).pack(side=tk.LEFT, padx=2)
-        self.button(tools_actions, "Dry Run", self.api_dry_run).pack(side=tk.LEFT, padx=2)
+        self.button(tools_actions, "API Test", self.api_test_connection, tooltip="Test ManaPool API credentials without changing inventory.").pack(side=tk.LEFT, padx=2)
+        self.button(tools_actions, "Dry Run", self.api_dry_run, tooltip="Build and save the ManaPool push payload without sending it.").pack(side=tk.LEFT, padx=2)
 
         controls = tk.Frame(self.root, bg="#111827")
         controls.pack(fill=tk.X, padx=12, pady=4)
@@ -828,8 +881,8 @@ class ManaPoolSellerDashboard:
         rarity = ttk.Combobox(controls, textvariable=self.rarity_var, width=11, values=["All", "common", "uncommon", "rare", "mythic"], state="readonly")
         rarity.pack(side=tk.LEFT)
         rarity.bind("<<ComboboxSelected>>", lambda *_: self.apply_filters())
-        self.button(controls, "Select Filtered", self.select_filtered).pack(side=tk.LEFT, padx=6)
-        self.button(controls, "Clear Filtered", self.clear_filtered).pack(side=tk.LEFT, padx=2)
+        self.button(controls, "Select Filtered", self.select_filtered, tooltip="Mark all visible filtered rows as Selling.").pack(side=tk.LEFT, padx=6)
+        self.button(controls, "Clear Filtered", self.clear_filtered, tooltip="Clear Selling from all visible filtered rows.").pack(side=tk.LEFT, padx=2)
 
         table_wrap = tk.Frame(self.root, bg="#111827")
         table_wrap.pack(fill=tk.BOTH, expand=True, padx=12, pady=4)

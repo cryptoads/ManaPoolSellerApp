@@ -467,7 +467,7 @@ The app is organized into tabs so each workflow shows the buttons that belong to
 
 | Tab | Purpose |
 |---|---|
-| Collection | Load, merge, sync, and prepare owned cards |
+| Collection | Load, merge, sync, prepare owned cards, and push newly selected listings |
 | Listed | Sync ManaPool, refresh pricing, push listings, and unlist cards |
 | Sold | Mark cards sold and prepare ManaPool sold-import review |
 | Tools | API tests and dry-run payload generation |
@@ -509,6 +509,14 @@ Listing actions affect ManaPool inventory and sales state.
 | Mark Max | Mark all available unlisted copies for sale |
 | Mark Sold | Record a completed sale |
 | Push API | Push selected listings to ManaPool |
+
+`Mark Max` works on the focused row. It sets `Sell Quantity` to:
+
+```text
+Quantity Owned - Quantity Listed
+```
+
+and marks that row as `Selling`. Use it when you want to list every unlisted copy you own for that row.
 
 ---
 
