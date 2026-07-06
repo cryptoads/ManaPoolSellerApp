@@ -925,6 +925,12 @@ class ManaPoolSellerDashboard:
         ).pack(side=tk.LEFT, padx=2)
         self.button(
             collection_actions,
+            "Adjust Owned",
+            self.adjust_selected_quantity_owned,
+            tooltip="Change Quantity Owned for non-sale reasons such as trades, gifts, lost cards, or corrections.",
+        ).pack(side=tk.LEFT, padx=2)
+        self.button(
+            collection_actions,
             "Push API",
             self.api_push_selected,
             primary=True,
@@ -1018,6 +1024,7 @@ class ManaPoolSellerDashboard:
         self.configure_table()
 
         self.table_menu = tk.Menu(self.root, tearoff=0)
+        self.table_menu.add_command(label="Adjust quantity owned", command=self.adjust_selected_quantity_owned)
         self.table_menu.add_command(label="Change card/set details", command=self.change_card_set_details)
         self.table_menu.add_command(label="Change grading for one copy", command=self.split_one_copy_to_condition)
 
@@ -2265,6 +2272,80 @@ class ManaPoolSellerDashboard:
             messagebox.showwarning(
                 "Sheets Sync Failed",
                 "The card/set change was applied locally, but Google Sheets could not be updated.\n\n"
+                f"{exc}"
+            )
+
+    def adjust_selected_quantity_owned(self):
+        row_id = self.context_row_id or self.tree.focus()
+        if not row_id:
+            messagebox.showwarning("No Row Selected", "Click a row first.")
+            return
+
+        idx = int(row_id)
+        if idx not in self.df.index:
+            return
+
+        row = self.df.loc[idx]
+        current_owned = safe_int(row.get("Quantity Owned"))
+        listed = safe_int(row.get("Quantity Listed"))
+        sell_qty = safe_int(row.get("Sell Quantity"))
+
+        qty_text = simpledialog.askstring(
+            "Adjust Quantity Owned",
+            "Enter the new Quantity Owned for this row.\n\n"
+            "Use this for trades, gifts, lost cards, damage, or inventory corrections.\n"
+            f"Currently owned: {current_owned}\n"
+            f"Currently listed: {listed}",
+            initialvalue=str(current_owned)
+        )
+
+        if qty_text is None:
+            return
+
+        new_owned = safe_int(qty_text, -1)
+        if new_owned < 0:
+            messagebox.showerror("Invalid Quantity", "Quantity Owned cannot be negative.")
+            return
+
+        if new_owned < listed:
+            messagebox.showerror(
+                "Listed Quantity Too High",
+                "Quantity Owned cannot be lower than Quantity Listed.\n\n"
+                "Unlist copies from ManaPool first, then adjust owned quantity."
+            )
+            return
+
+        if new_owned == current_owned:
+            return
+
+        if not messagebox.askyesno(
+            "Confirm Quantity Adjustment",
+            f"Change Quantity Owned for {safe(row.get('Name'))} from {current_owned} to {new_owned}?\n\n"
+            "This does not create a sold record."
+        ):
+            return
+
+        now = datetime.now().isoformat()
+        self.df.at[idx, "Quantity Owned"] = str(new_owned)
+        if sell_qty > new_owned:
+            self.df.at[idx, "Sell Quantity"] = str(new_owned)
+        if safe_int(self.df.at[idx, "Sell Quantity"]) <= 0:
+            self.df.at[idx, "Selling"] = "FALSE"
+        self.df.at[idx, "Last Updated"] = now
+
+        if new_owned <= 0:
+            self.df = self.df.drop(index=idx)
+
+        self.df = normalize_ledger_df(self.df)
+        self.apply_filters(keep_status=True)
+        try:
+            self.sheets.write_inventory(self.df)
+            self.set_status(f"Adjusted Quantity Owned from {current_owned} to {new_owned}.")
+        except Exception as exc:
+            self.log_output(f"Quantity Owned Sync Error: {exc}")
+            messagebox.showwarning(
+                "Sheets Sync Failed",
+                "The quantity adjustment was applied locally, but Google Sheets could not be updated.\n\n"
                 f"{exc}"
             )
 

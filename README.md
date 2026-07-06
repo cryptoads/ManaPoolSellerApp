@@ -507,6 +507,7 @@ Listing actions affect ManaPool inventory and sales state.
 | Button | Purpose |
 |---|---|
 | Mark Max | Mark all available unlisted copies for sale |
+| Adjust Owned | Change owned quantity for non-sale activity such as trades, gifts, lost cards, damage, or corrections |
 | Mark Sold | Record a completed sale |
 | Push API | Push selected listings to ManaPool |
 
@@ -517,6 +518,8 @@ Quantity Owned - Quantity Listed
 ```
 
 and marks that row as `Selling`. Use it when you want to list every unlisted copy you own for that row.
+
+`Adjust Owned` changes `Quantity Owned` without creating a sold record. The app will not let you set `Quantity Owned` below `Quantity Listed`; unlist those copies first if needed.
 
 ---
 
@@ -529,6 +532,7 @@ The inventory table supports quick row edits:
 | Double-click `Sell Quantity` | Edit how many copies are selected for the next listing push |
 | Double-click `List Price` | Edit the price to push |
 | Double-click `Condition` | Choose the ManaPool condition for that row |
+| Right-click -> Adjust quantity owned | Change owned quantity without recording a sale |
 | Right-click -> Change grading for one copy | Move one owned copy into a new condition row |
 | Right-click -> Change card/set details | Change the card printing or set identity for a row |
 
