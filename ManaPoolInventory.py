@@ -540,6 +540,9 @@ class ManaPoolAPI:
 
     def get_seller_orders(self, limit=100):
         return self.request("GET", "/seller/orders", params={"limit": limit})
+
+    def get_seller_order(self, order_id):
+        return self.request("GET", f"/seller/orders/{order_id}")
     
     def build_unlist_payload(self, df):
         payload = self.build_inventory_payload(df)
@@ -1236,7 +1239,8 @@ class ManaPoolSellerDashboard:
         try:
             imported_ids = self.sheets.read_sold_import_ids("manapool")
             result = self.manapool_api.get_seller_orders(limit=100)
-            sales = self.extract_manapool_sales(result, as_of_date, imported_ids)
+            orders = self.expand_manapool_orders(result)
+            sales = self.extract_manapool_sales(orders, as_of_date, imported_ids)
         except Exception as exc:
             self.log_output(f"Sold Import Review Error: {exc}")
             messagebox.showerror("Sold Import Review Error", str(exc))
@@ -1278,11 +1282,43 @@ class ManaPoolSellerDashboard:
             return result
         if not isinstance(result, dict):
             return []
+        if isinstance(result.get("order"), dict):
+            return [result.get("order")]
         for key in ["data", "orders", "items", "results"]:
             value = result.get(key)
             if isinstance(value, list):
                 return value
         return []
+
+    def order_has_items(self, order):
+        if not isinstance(order, dict):
+            return False
+        for key in ["items", "line_items", "order_items", "sold_items", "inventory_items"]:
+            if isinstance(order.get(key), list):
+                return True
+        return False
+
+    def expand_manapool_orders(self, result):
+        orders = []
+        for order in self.manapool_order_list(result):
+            if self.order_has_items(order):
+                orders.append(order)
+                continue
+
+            order_id = self.first_value(order, ["id", "order_id", "uuid"], "")
+            if not order_id:
+                orders.append(order)
+                continue
+
+            try:
+                detail = self.manapool_api.get_seller_order(order_id)
+                detail_orders = self.manapool_order_list(detail)
+                orders.append(detail_orders[0] if detail_orders else order)
+            except Exception as exc:
+                self.log_output(f"Could not load ManaPool order detail {order_id}: {exc}")
+                orders.append(order)
+
+        return orders
 
     def manapool_order_items(self, order):
         if not isinstance(order, dict):
