@@ -80,6 +80,32 @@ LEDGER_COLUMNS = [
     "Last Listed",
 ]
 
+SOLD_COLUMNS = [
+    "Sold At",
+    "Name",
+    "Set code",
+    "Set name",
+    "Collector number",
+    "Foil",
+    "Rarity",
+    "Condition",
+    "Language",
+    "Scryfall ID",
+    "ManaBox ID",
+    "Quantity Sold",
+    "Sold Price",
+    "Total Sold",
+    "Purchase price",
+    "Listed Price",
+    "ManaPool Product ID",
+    "TCGPlayer SKU",
+    "Key",
+    "Import Source",
+    "Import ID",
+    "Import Mode",
+    "Imported At",
+]
+
 TABLE_COLUMNS = [
     "Selling",
     "Is Listed",
@@ -96,6 +122,19 @@ TABLE_COLUMNS = [
     "Best Price",
     "List Price",
     "Listed Price",
+]
+
+SOLD_TABLE_COLUMNS = [
+    "Sold At",
+    "Name",
+    "Set code",
+    "Collector number",
+    "Condition",
+    "Language",
+    "Quantity Sold",
+    "Sold Price",
+    "Total Sold",
+    "Import Mode",
 ]
 
 BOOL_TRUE_VALUES = {"true", "1", "yes", "y", "✔", "x"}
@@ -303,12 +342,24 @@ def make_empty_ledger():
     return pd.DataFrame(columns=LEDGER_COLUMNS).astype("object")
 
 
+def make_empty_sold():
+    return pd.DataFrame(columns=SOLD_COLUMNS).astype("object")
+
+
 def ensure_ledger_columns(df):
     df = df.copy().astype("object")
     for col in LEDGER_COLUMNS:
         if col not in df.columns:
             df[col] = ""
     return df[LEDGER_COLUMNS]
+
+
+def ensure_sold_columns(df):
+    df = df.copy().astype("object")
+    for col in SOLD_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    return df[SOLD_COLUMNS]
 
 
 def normalize_ledger_df(df):
@@ -330,6 +381,28 @@ def normalize_ledger_df(df):
         df.at[idx, "Purchase price"] = price_text(row.get("Purchase price"))
         df.at[idx, "Best Price"] = price_text(row.get("Best Price"))
         df.at[idx, "List Price"] = price_text(row.get("List Price"))
+        df.at[idx, "Listed Price"] = price_text(row.get("Listed Price"))
+
+    return df.astype("object")
+
+
+def normalize_sold_df(df):
+    if df is None or df.empty:
+        return make_empty_sold()
+
+    df = ensure_sold_columns(df)
+
+    for idx, row in df.iterrows():
+        qty = safe_int(row.get("Quantity Sold"))
+        sold_price = safe_float(row.get("Sold Price"))
+        total = safe_float(row.get("Total Sold")) or (qty * sold_price)
+
+        df.at[idx, "Collector number"] = safe_collector_number(row.get("Collector number"))
+        df.at[idx, "Condition"] = normalize_condition(row.get("Condition"))
+        df.at[idx, "Quantity Sold"] = str(qty)
+        df.at[idx, "Sold Price"] = price_text(sold_price)
+        df.at[idx, "Total Sold"] = price_text(total)
+        df.at[idx, "Purchase price"] = price_text(row.get("Purchase price"))
         df.at[idx, "Listed Price"] = price_text(row.get("Listed Price"))
 
     return df.astype("object")
@@ -414,6 +487,15 @@ class SheetsClient:
             return make_empty_ledger()
         return normalize_ledger_df(pd.DataFrame(records))
 
+    def read_sold_inventory(self):
+        if not self.enabled:
+            raise RuntimeError(self.error or "Google Sheets is not connected.")
+        sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
+        records = sold_sheet.get_all_records()
+        if not records:
+            return make_empty_sold()
+        return normalize_sold_df(pd.DataFrame(records))
+
     def write_inventory(self, df):
         if not self.enabled:
             raise RuntimeError(self.error or "Google Sheets is not connected.")
@@ -436,31 +518,7 @@ class SheetsClient:
     def append_sold_inventory(self, sold_row):
         sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
 
-        headers = [
-            "Sold At",
-            "Name",
-            "Set code",
-            "Set name",
-            "Collector number",
-            "Foil",
-            "Rarity",
-            "Condition",
-            "Language",
-            "Scryfall ID",
-            "ManaBox ID",
-            "Quantity Sold",
-            "Sold Price",
-            "Total Sold",
-            "Purchase price",
-            "Listed Price",
-            "ManaPool Product ID",
-            "TCGPlayer SKU",
-            "Key",
-            "Import Source",
-            "Import ID",
-            "Import Mode",
-            "Imported At",
-        ]
+        headers = SOLD_COLUMNS
 
         existing = sold_sheet.get_all_values()
 
@@ -689,6 +747,8 @@ class ManaPoolSellerDashboard:
 
         self.df = make_empty_ledger()
         self.filtered_df = make_empty_ledger()
+        self.sold_df = make_empty_sold()
+        self.filtered_sold_df = make_empty_sold()
         self.sheets = SheetsClient()
         self.manapool_api = ManaPoolAPI()
 
@@ -700,6 +760,10 @@ class ManaPoolSellerDashboard:
         self.listed_cards_var = tk.StringVar(value="0")
         self.selling_cards_var = tk.StringVar(value="0")
         self.value_var = tk.StringVar(value="$0.00")
+        self.sold_cards_var = tk.StringVar(value="0")
+        self.sold_gross_var = tk.StringVar(value="$0.00")
+        self.sold_profit_var = tk.StringVar(value="$0.00")
+        self.sold_top_set_var = tk.StringVar(value="-")
         self.sold_import_as_of_var = tk.StringVar(value=datetime.now().date().isoformat())
 
         self.pricing_mode_var = tk.StringVar(value="Undercut $0.01")
@@ -879,9 +943,17 @@ class ManaPoolSellerDashboard:
         sold_actions = tk.Frame(sold_tab, bg="#111827")
         sold_actions.pack(fill=tk.X, padx=8, pady=8)
         self.button(sold_actions, "Mark Sold", self.mark_selected_sold, tooltip="Manually record a sale, append it to Sold Inventory, and reduce owned/listed quantity.").pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Refresh Sold", self.load_sold_history, tooltip="Reload the Sold Inventory sheet and refresh sold analytics.").pack(side=tk.LEFT, padx=2)
         tk.Label(sold_actions, text="Import as-of", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
         tk.Entry(sold_actions, textvariable=self.sold_import_as_of_var, width=12).pack(side=tk.LEFT, padx=2)
         self.button(sold_actions, "Review Sold", self.review_sold_import, tooltip="Prepare the approval-first ManaPool sold import workflow using the as-of date.").pack(side=tk.LEFT, padx=2)
+
+        sold_metrics = tk.Frame(sold_tab, bg="#111827")
+        sold_metrics.pack(fill=tk.X, padx=8, pady=(0, 8))
+        self.metric(sold_metrics, "Cards Sold", self.sold_cards_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.metric(sold_metrics, "Gross Sales", self.sold_gross_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.metric(sold_metrics, "Est. Profit", self.sold_profit_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.metric(sold_metrics, "Top Set", self.sold_top_set_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
 
         tools_actions = tk.Frame(tools_tab, bg="#111827")
         tools_actions.pack(fill=tk.X, padx=8, pady=8)
@@ -990,6 +1062,25 @@ class ManaPoolSellerDashboard:
         self.tree.tag_configure("mythic", background="#3b0764", foreground="#f5f3ff")
         self.tree.tag_configure("normal", background="#0f172a", foreground="#e5e7eb")
 
+    def configure_sold_table(self):
+        widths = {
+            "Sold At": 150,
+            "Name": 260,
+            "Set code": 75,
+            "Collector number": 95,
+            "Condition": 105,
+            "Language": 75,
+            "Quantity Sold": 95,
+            "Sold Price": 90,
+            "Total Sold": 95,
+            "Import Mode": 100,
+        }
+        self.tree["columns"] = SOLD_TABLE_COLUMNS
+        for col in SOLD_TABLE_COLUMNS:
+            self.tree.heading(col, text=col, command=lambda c=col: self.sort_by(c))
+            self.tree.column(col, width=widths.get(col, 100), anchor="center")
+        self.tree.column("Name", width=widths["Name"], anchor="w")
+
     def handle_view_changed(self, event=None):
         selected_tab = self.view_tabs.tab(self.view_tabs.select(), "text").lower()
         if selected_tab == "listed":
@@ -1004,6 +1095,9 @@ class ManaPoolSellerDashboard:
         self.set_status(f"Viewing {selected_tab}.")
 
     def handle_double_click(self, event):
+        if self.active_view == "sold":
+            return
+
         region = self.tree.identify("region", event.x, event.y)
         if region != "cell":
             return
@@ -1023,6 +1117,9 @@ class ManaPoolSellerDashboard:
             self.toggle_selected_row()
 
     def show_table_context_menu(self, event):
+        if self.active_view == "sold":
+            return
+
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
@@ -1214,11 +1311,26 @@ class ManaPoolSellerDashboard:
     def load_from_google_sheets(self):
         try:
             self.df = self.sheets.read_inventory()
+            self.load_sold_history(show_status=False)
             self.apply_filters()
             self.set_status(f"Loaded {len(self.df)} rows from Google Sheets.")
         except Exception as exc:
             self.log_output(f"Google Sheets Load Error: {exc}")
             self.set_status("Could not load Google Sheets inventory.")
+
+    def load_sold_history(self, show_status=True):
+        try:
+            self.sold_df = self.sheets.read_sold_inventory()
+            if self.active_view == "sold":
+                self.apply_filters(keep_status=True)
+            else:
+                self.update_sold_metrics()
+            if show_status:
+                self.set_status(f"Loaded {len(self.sold_df)} sold rows.")
+        except Exception as exc:
+            self.log_output(f"Sold Inventory Load Error: {exc}")
+            if show_status:
+                messagebox.showerror("Sold Inventory Load Error", str(exc))
 
     def sync_sheets(self):
         try:
@@ -1584,6 +1696,7 @@ class ManaPoolSellerDashboard:
 
             self.df = normalize_ledger_df(self.df)
             self.sheets.write_inventory(self.df)
+            self.load_sold_history(show_status=False)
             self.apply_filters(keep_status=True)
             messagebox.showinfo(
                 "Sold Import Complete",
@@ -1806,6 +1919,7 @@ class ManaPoolSellerDashboard:
 
             self.df = normalize_ledger_df(self.df)
             self.sheets.write_inventory(self.df)
+            self.load_sold_history(show_status=False)
             self.apply_filters(keep_status=True)
 
             messagebox.showinfo(
@@ -1821,14 +1935,25 @@ class ManaPoolSellerDashboard:
 
     # ---------- Table rendering ----------
     def apply_filters(self, keep_status=False):
+        if self.active_view == "sold":
+            df = normalize_sold_df(self.sold_df)
+            query = self.search_var.get().strip().lower()
+            if query:
+                df = df[df.apply(lambda row: query in " ".join([safe(v).lower() for v in row.values]), axis=1)]
+            rarity = self.rarity_var.get()
+            if rarity != "All":
+                df = df[df["Rarity"].astype(str).str.lower() == rarity.lower()]
+            if self.sort_column and self.sort_column in df.columns:
+                df = self.sort_dataframe(df, self.sort_column, self.sort_reverse)
+            self.filtered_sold_df = df
+            self.render_table()
+            if not keep_status:
+                self.set_status(f"Showing {len(self.filtered_sold_df)} of {len(self.sold_df)} sold rows.")
+            return
+
         df = normalize_ledger_df(self.df)
         if self.active_view == "listed":
             df = df[df["Quantity Listed"].apply(safe_int) > 0]
-        elif self.active_view == "sold":
-            df = df[
-                df["Selling"].apply(bool_from_value)
-                | (df["Quantity Listed"].apply(safe_int) > 0)
-            ]
         query = self.search_var.get().strip().lower()
         if query:
             df = df[df.apply(lambda row: query in " ".join([safe(v).lower() for v in row.values]), axis=1)]
@@ -1844,6 +1969,26 @@ class ManaPoolSellerDashboard:
 
     def render_table(self):
         self.tree.delete(*self.tree.get_children())
+        if self.active_view == "sold":
+            self.configure_sold_table()
+            for idx, row in self.filtered_sold_df.iterrows():
+                self.tree.insert("", "end", iid=str(idx), tags=("normal",), values=(
+                    safe(row.get("Sold At"))[:19],
+                    safe(row.get("Name")),
+                    safe(row.get("Set code")),
+                    safe(row.get("Collector number")),
+                    safe(row.get("Condition")),
+                    safe(row.get("Language")),
+                    safe_int(row.get("Quantity Sold")),
+                    money(row.get("Sold Price")),
+                    money(row.get("Total Sold")),
+                    safe(row.get("Import Mode")),
+                ))
+            self.update_metrics()
+            self.update_sold_metrics()
+            return
+
+        self.configure_table()
         for idx, row in self.filtered_df.iterrows():
             selling = bool_from_value(row.get("Selling"))
             listed = bool_from_value(row.get("Is Listed"))
@@ -1887,7 +2032,7 @@ class ManaPoolSellerDashboard:
         self.apply_filters(keep_status=True)
 
     def sort_dataframe(self, df, column, reverse):
-        numeric = {"Quantity Owned", "Sell Quantity", "Quantity Listed", "Best Price", "List Price", "Listed Price", "Purchase price"}
+        numeric = {"Quantity Owned", "Sell Quantity", "Quantity Listed", "Best Price", "List Price", "Listed Price", "Purchase price", "Quantity Sold", "Sold Price", "Total Sold"}
         if column in numeric:
             return df.assign(_sort=df[column].apply(safe_float)).sort_values("_sort", ascending=not reverse).drop(columns=["_sort"])
         return df.sort_values(column, ascending=not reverse, key=lambda s: s.astype(str).str.lower())
@@ -1904,6 +2049,33 @@ class ManaPoolSellerDashboard:
         self.listed_cards_var.set(f"{listed:,}")
         self.selling_cards_var.set(f"{selling:,}")
         self.value_var.set(f"${value:,.2f}")
+
+    def update_sold_metrics(self):
+        df = self.filtered_sold_df if self.active_view == "sold" else self.sold_df
+        if df.empty:
+            self.sold_cards_var.set("0")
+            self.sold_gross_var.set("$0.00")
+            self.sold_profit_var.set("$0.00")
+            self.sold_top_set_var.set("-")
+            return
+
+        qty = df["Quantity Sold"].apply(safe_int)
+        gross = df["Total Sold"].apply(safe_float)
+        fallback_gross = qty * df["Sold Price"].apply(safe_float)
+        gross = gross.where(gross > 0, fallback_gross)
+        cost = qty * df["Purchase price"].apply(safe_float)
+        profit = gross - cost
+
+        set_totals = df.assign(_qty=qty).groupby("Set code")["_qty"].sum()
+        top_set = "-"
+        if not set_totals.empty:
+            top_code = safe(set_totals.idxmax())
+            top_set = f"{top_code} ({int(set_totals.max())})" if top_code else "-"
+
+        self.sold_cards_var.set(f"{qty.sum():,}")
+        self.sold_gross_var.set(f"${gross.sum():,.2f}")
+        self.sold_profit_var.set(f"${profit.sum():,.2f}")
+        self.sold_top_set_var.set(top_set)
 
     def ask_condition(self, title, current_condition):
         dialog = tk.Toplevel(self.root)

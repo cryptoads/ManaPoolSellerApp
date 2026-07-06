@@ -469,10 +469,10 @@ The app is organized into tabs so each workflow shows the buttons that belong to
 |---|---|
 | Collection | Load, merge, sync, prepare owned cards, and push newly selected listings |
 | Listed | Sync ManaPool, refresh pricing, push listings, and unlist cards |
-| Sold | Mark cards sold and prepare ManaPool sold-import review |
+| Sold | Review sold-card history, sold analytics, manual sold entry, and ManaPool sold imports |
 | Tools | API tests and dry-run payload generation |
 
-Switching tabs also changes the table view. `Collection` shows the owned collection, `Listed` focuses on rows with `Quantity Listed` greater than zero, and `Sold` focuses on rows that are listed or selected for sale while the sold-import workflow is built out.
+Switching tabs also changes the table view. `Collection` shows the owned collection, `Listed` focuses on rows with `Quantity Listed` greater than zero, and `Sold` shows rows from the `Sold Inventory` sheet.
 
 ---
 
@@ -691,6 +691,25 @@ Condition
 If the row is currently listed, the app warns you before continuing. Continuing clears the local listed state and stale ManaPool product/SKU fields, keeps the previous listed quantity selected as `Sell Quantity`, and preserves the old listed price as `List Price` when available.
 
 If the old printing is already live on ManaPool, unlist the old listing before pushing the corrected row.
+
+---
+
+## Sold History and Analytics
+
+The `Sold` tab shows the `Sold Inventory` sheet as a sold-card history table.
+
+Use `Refresh Sold` to reload sold history from Google Sheets. The Sold tab also shows quick analytics for the currently visible sold rows:
+
+| Metric | Meaning |
+|---|---|
+| Cards Sold | Sum of `Quantity Sold` |
+| Gross Sales | Sum of `Total Sold`, falling back to `Quantity Sold * Sold Price` when needed |
+| Est. Profit | Gross sales minus `Quantity Sold * Purchase price` |
+| Top Set | Set code with the most sold quantity in the current sold view |
+
+Search and rarity filters apply to the sold table too, so the analytics update for the visible sold rows.
+
+Tracking-only ManaPool imports are added to `Sold Inventory` and appear in this table. They do not adjust active inventory.
 
 ---
 
