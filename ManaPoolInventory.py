@@ -101,6 +101,17 @@ TABLE_COLUMNS = [
 BOOL_TRUE_VALUES = {"true", "1", "yes", "y", "✔", "x"}
 
 
+MANAPOOL_CONDITIONS = [
+    ("near_mint", "NM"),
+    ("lightly_played", "LP"),
+    ("moderately_played", "MP"),
+    ("heavily_played", "HP"),
+    ("damaged", "DMG"),
+]
+MANAPOOL_CONDITION_VALUES = [value for value, _ in MANAPOOL_CONDITIONS]
+MANAPOOL_CONDITION_BY_ID = {condition_id: value for value, condition_id in MANAPOOL_CONDITIONS}
+
+
 # ============================================================
 # Environment
 # ============================================================
@@ -213,6 +224,11 @@ def map_condition(value):
     return mapping.get(text, "NM")
 
 
+def normalize_condition(value):
+    condition_id = map_condition(value)
+    return MANAPOOL_CONDITION_BY_ID.get(condition_id, "near_mint")
+
+
 def map_language(value):
     text = safe(value).lower()
     mapping = {
@@ -294,12 +310,12 @@ def normalize_ledger_df(df):
     df = ensure_ledger_columns(df)
 
     for idx, row in df.iterrows():
-        if safe(row.get("Key")) == "":
-            df.at[idx, "Key"] = row_key(row)
-
         df.at[idx, "Selling"] = bool_text(row.get("Selling"))
         df.at[idx, "Is Listed"] = bool_text(row.get("Is Listed"))
         df.at[idx, "Collector number"] = safe_collector_number(row.get("Collector number"))
+        df.at[idx, "Condition"] = normalize_condition(row.get("Condition"))
+        if safe(row.get("Key")) == "":
+            df.at[idx, "Key"] = row_key(df.loc[idx])
         df.at[idx, "Quantity Owned"] = str(safe_int(row.get("Quantity Owned")))
         df.at[idx, "Quantity Listed"] = str(safe_int(row.get("Quantity Listed")))
         df.at[idx, "Sell Quantity"] = str(safe_int(row.get("Sell Quantity")))
@@ -335,7 +351,7 @@ def normalize_manabox_csv(df):
             "Collector number": safe_collector_number(row.get("Collector number")),
             "Foil": safe(row.get("Foil")),
             "Rarity": safe(row.get("Rarity")),
-            "Condition": safe(row.get("Condition")),
+            "Condition": normalize_condition(row.get("Condition")),
             "Language": safe(row.get("Language")),
             "Scryfall ID": safe(row.get("Scryfall ID")),
             "ManaBox ID": safe(row.get("ManaBox ID")),
@@ -658,6 +674,7 @@ class ManaPoolSellerDashboard:
 
         self.sort_column = None
         self.sort_reverse = False
+        self.context_row_id = None
 
         self.build_styles()
         self.build_ui()
@@ -797,7 +814,12 @@ class ManaPoolSellerDashboard:
         table_wrap.grid_rowconfigure(0, weight=1)
         table_wrap.grid_columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self.handle_double_click)
+        self.tree.bind("<Button-3>", self.show_table_context_menu)
         self.configure_table()
+
+        self.table_menu = tk.Menu(self.root, tearoff=0)
+        self.table_menu.add_command(label="Change card/set details", command=self.change_card_set_details)
+        self.table_menu.add_command(label="Change grading for one copy", command=self.split_one_copy_to_condition)
 
         self.output_box = scrolledtext.ScrolledText(self.root, height=6, bg="#030712", fg="#e5e7eb", insertbackground="#e5e7eb")
         self.output_box.pack(fill=tk.X, padx=12, pady=(4, 0))
@@ -854,10 +876,30 @@ class ManaPoolSellerDashboard:
         col_index = int(column_id.replace("#", "")) - 1
         column_name = TABLE_COLUMNS[col_index]
 
-        if column_name in ["Sell Quantity", "List Price"]:
+        if column_name in ["Sell Quantity", "List Price", "Condition"]:
             self.edit_cell(row_id, column_name)
         else:
             self.toggle_selected_row()
+
+    def show_table_context_menu(self, event):
+        row_id = self.tree.identify_row(event.y)
+        if not row_id:
+            return
+
+        self.tree.selection_set(row_id)
+        self.tree.focus(row_id)
+        self.context_row_id = row_id
+
+        idx = int(row_id)
+        can_split = safe_int(self.df.at[idx, "Quantity Owned"]) > 1
+        self.table_menu.entryconfig("Change card/set details", state=tk.NORMAL)
+        self.table_menu.entryconfig(
+            "Change grading for one copy",
+            state=tk.NORMAL if can_split else tk.DISABLED,
+        )
+        self.table_menu.tk_popup(event.x_root, event.y_root)
+        self.table_menu.grab_release()
+
     def select_all_listed(self):
         if self.df.empty:
             return
@@ -944,15 +986,31 @@ class ManaPoolSellerDashboard:
 
         current_value = self.df.at[idx, column_name]
 
-        entry = tk.Entry(self.tree)
-        entry.place(x=x, y=y, width=width, height=height)
-        entry.insert(0, safe(current_value))
-        entry.focus()
-        entry.select_range(0, tk.END)
+        if column_name == "Condition":
+            editor_var = tk.StringVar(value=normalize_condition(current_value))
+            editor = ttk.Combobox(
+                self.tree,
+                textvariable=editor_var,
+                values=MANAPOOL_CONDITION_VALUES,
+                state="readonly",
+            )
+            editor.place(x=x, y=y, width=width, height=height)
+            editor.focus()
+        else:
+            editor = tk.Entry(self.tree)
+            editor.place(x=x, y=y, width=width, height=height)
+            editor.insert(0, safe(current_value))
+            editor.focus()
+            editor.select_range(0, tk.END)
+
+        edit_finished = {"value": False}
 
         def save_edit(event=None):
-            new_value = entry.get().strip()
-            entry.destroy()
+            if edit_finished["value"]:
+                return
+            edit_finished["value"] = True
+            new_value = editor.get().strip()
+            editor.destroy()
 
             if column_name == "Sell Quantity":
                 qty = safe_int(new_value)
@@ -980,16 +1038,26 @@ class ManaPoolSellerDashboard:
 
                 self.df.at[idx, "List Price"] = price_text(price)
 
+            elif column_name == "Condition":
+                self.df.at[idx, "Condition"] = normalize_condition(new_value)
+                self.df.at[idx, "Key"] = row_key(self.df.loc[idx])
+
             self.df = normalize_ledger_df(self.df)
             self.apply_filters(keep_status=True)
             self.set_status(f"Updated {column_name}.")
 
         def cancel_edit(event=None):
-            entry.destroy()
+            if edit_finished["value"]:
+                return
+            edit_finished["value"] = True
+            editor.destroy()
 
-        entry.bind("<Return>", save_edit)
-        entry.bind("<FocusOut>", save_edit)
-        entry.bind("<Escape>", cancel_edit)    
+        editor.bind("<Return>", save_edit)
+        editor.bind("<FocusOut>", save_edit)
+        editor.bind("<Escape>", cancel_edit)
+        if column_name == "Condition":
+            editor.bind("<<ComboboxSelected>>", save_edit)
+            editor.event_generate("<Button-1>")
 
     # ---------- Logging / status ----------
     def log_output(self, text):
@@ -1317,12 +1385,283 @@ class ManaPoolSellerDashboard:
         selling = self.df[self.df["Selling"].apply(bool_from_value)]["Sell Quantity"].apply(safe_int).sum() if not self.df.empty else 0
         value = 0.0
         if not self.df.empty:
-            selected = self.df[self.df["Selling"].apply(bool_from_value)]
-            value = sum(selected["Sell Quantity"].apply(safe_int) * selected["List Price"].apply(safe_float))
+            listed_rows = self.df[self.df["Quantity Listed"].apply(safe_int) > 0]
+            value = sum(listed_rows["Quantity Listed"].apply(safe_int) * listed_rows["Listed Price"].apply(safe_float))
         self.total_cards_var.set(f"{owned:,}")
         self.listed_cards_var.set(f"{listed:,}")
         self.selling_cards_var.set(f"{selling:,}")
         self.value_var.set(f"${value:,.2f}")
+
+    def ask_condition(self, title, current_condition):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(title)
+        dialog.configure(bg="#111827")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        current = normalize_condition(current_condition)
+        default_condition = next((condition for condition in MANAPOOL_CONDITION_VALUES if condition != current), current)
+        selected = tk.StringVar(value=default_condition)
+        result = {"condition": None}
+
+        tk.Label(
+            dialog,
+            text="New condition",
+            bg="#111827",
+            fg="#e5e7eb",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        combo = ttk.Combobox(
+            dialog,
+            textvariable=selected,
+            values=MANAPOOL_CONDITION_VALUES,
+            state="readonly",
+            width=24,
+        )
+        combo.pack(fill=tk.X, padx=12)
+        combo.focus()
+
+        buttons = tk.Frame(dialog, bg="#111827")
+        buttons.pack(fill=tk.X, padx=12, pady=12)
+
+        def choose():
+            result["condition"] = normalize_condition(selected.get())
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        self.button(buttons, "Cancel", cancel).pack(side=tk.RIGHT, padx=(6, 0))
+        self.button(buttons, "OK", choose, primary=True).pack(side=tk.RIGHT)
+        dialog.bind("<Return>", lambda *_: choose())
+        dialog.bind("<Escape>", lambda *_: cancel())
+
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.root.winfo_rooty() + (self.root.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        self.root.wait_window(dialog)
+
+        return result["condition"]
+
+    def ask_card_set_details(self, row):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change Card / Set")
+        dialog.configure(bg="#111827")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        fields = [
+            ("Name", "Name"),
+            ("Set code", "Set code"),
+            ("Set name", "Set name"),
+            ("Collector number", "Collector number"),
+            ("Scryfall ID", "Scryfall ID"),
+            ("Rarity", "Rarity"),
+            ("ManaBox ID", "ManaBox ID"),
+            ("Foil", "Foil"),
+            ("Language", "Language"),
+        ]
+        variables = {}
+
+        form = tk.Frame(dialog, bg="#111827")
+        form.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 6))
+
+        for row_number, (label, column) in enumerate(fields):
+            tk.Label(form, text=label, bg="#111827", fg="#e5e7eb").grid(row=row_number, column=0, sticky="w", pady=3)
+            var = tk.StringVar(value=safe(row.get(column)))
+            variables[column] = var
+            tk.Entry(form, textvariable=var, width=42).grid(row=row_number, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        condition_row = len(fields)
+        tk.Label(form, text="Condition", bg="#111827", fg="#e5e7eb").grid(row=condition_row, column=0, sticky="w", pady=3)
+        condition_var = tk.StringVar(value=normalize_condition(row.get("Condition")))
+        condition = ttk.Combobox(
+            form,
+            textvariable=condition_var,
+            values=MANAPOOL_CONDITION_VALUES,
+            state="readonly",
+            width=39,
+        )
+        condition.grid(row=condition_row, column=1, sticky="ew", padx=(10, 0), pady=3)
+        form.grid_columnconfigure(1, weight=1)
+
+        result = {"values": None}
+        buttons = tk.Frame(dialog, bg="#111827")
+        buttons.pack(fill=tk.X, padx=12, pady=(4, 12))
+
+        def choose():
+            values = {column: var.get().strip() for column, var in variables.items()}
+            values["Condition"] = normalize_condition(condition_var.get())
+            result["values"] = values
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        self.button(buttons, "Cancel", cancel).pack(side=tk.RIGHT, padx=(6, 0))
+        self.button(buttons, "OK", choose, primary=True).pack(side=tk.RIGHT)
+        dialog.bind("<Return>", lambda *_: choose())
+        dialog.bind("<Escape>", lambda *_: cancel())
+
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.root.winfo_rooty() + (self.root.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        self.root.wait_window(dialog)
+
+        return result["values"]
+
+    def change_card_set_details(self):
+        row_id = self.context_row_id or self.tree.focus()
+        if not row_id:
+            return
+
+        idx = int(row_id)
+        if idx not in self.df.index:
+            return
+
+        was_listed = safe_int(self.df.at[idx, "Quantity Listed"]) > 0
+        if was_listed:
+            proceed = messagebox.askyesno(
+                "Change Listed Card",
+                "This row is currently marked as listed.\n\n"
+                "Changing the card/set will clear the local listed status and ManaPool mapping for this row. "
+                "If the old printing is already live on ManaPool, unlist it there or with the Unlist action first.\n\n"
+                "Continue?"
+            )
+            if not proceed:
+                return
+
+        values = self.ask_card_set_details(self.df.loc[idx])
+        if not values:
+            return
+
+        now = datetime.now().isoformat()
+        previous_listed_qty = safe_int(self.df.at[idx, "Quantity Listed"])
+        previous_listed_price = safe_float(self.df.at[idx, "Listed Price"])
+
+        for column, value in values.items():
+            self.df.at[idx, column] = value
+
+        self.df.at[idx, "Collector number"] = safe_collector_number(self.df.at[idx, "Collector number"])
+        self.df.at[idx, "Condition"] = normalize_condition(self.df.at[idx, "Condition"])
+        self.df.at[idx, "Key"] = row_key(self.df.loc[idx])
+        self.df.at[idx, "ManaPool Product ID"] = ""
+        self.df.at[idx, "TCGPlayer Product ID"] = ""
+        self.df.at[idx, "TCGPlayer SKU"] = ""
+        self.df.at[idx, "Best Price"] = ""
+        self.df.at[idx, "Best Price Updated"] = ""
+        self.df.at[idx, "Listed Price"] = ""
+        self.df.at[idx, "Listed Price Updated"] = ""
+        self.df.at[idx, "Last Listed"] = ""
+
+        if was_listed:
+            sell_qty = min(previous_listed_qty, safe_int(self.df.at[idx, "Quantity Owned"]))
+            self.df.at[idx, "Is Listed"] = "FALSE"
+            self.df.at[idx, "Quantity Listed"] = "0"
+            self.df.at[idx, "Selling"] = bool_text(sell_qty > 0)
+            self.df.at[idx, "Sell Quantity"] = str(sell_qty)
+            if previous_listed_price > 0:
+                self.df.at[idx, "List Price"] = price_text(previous_listed_price)
+
+        self.df.at[idx, "Last Updated"] = now
+
+        self.df = normalize_ledger_df(self.df)
+        self.apply_filters(keep_status=True)
+        self.set_status("Updated card/set details. Refresh price before pushing if needed.")
+        try:
+            self.sheets.write_inventory(self.df)
+        except Exception as exc:
+            self.log_output(f"Google Sheets Sync Error after card/set change: {exc}")
+            messagebox.showwarning(
+                "Sheets Sync Failed",
+                "The card/set change was applied locally, but Google Sheets could not be updated.\n\n"
+                f"{exc}"
+            )
+
+    def split_one_copy_to_condition(self):
+        row_id = self.context_row_id or self.tree.focus()
+        if not row_id:
+            return
+
+        idx = int(row_id)
+        if idx not in self.df.index:
+            return
+
+        owned = safe_int(self.df.at[idx, "Quantity Owned"])
+        if owned <= 1:
+            messagebox.showwarning("Cannot Split", "This row needs at least 2 owned copies before one can be moved to another condition.")
+            return
+
+        current_condition = normalize_condition(self.df.at[idx, "Condition"])
+        new_condition = self.ask_condition("Change Grading", current_condition)
+        if not new_condition:
+            return
+
+        if new_condition == current_condition:
+            messagebox.showwarning("Same Condition", "Choose a different condition for the split copy.")
+            return
+
+        now = datetime.now().isoformat()
+        self.df = normalize_ledger_df(self.df)
+
+        new_row = self.df.loc[idx].to_dict()
+        new_row["Condition"] = new_condition
+        new_row["Quantity Owned"] = "1"
+        new_row["Quantity Listed"] = "0"
+        new_row["Sell Quantity"] = "0"
+        new_row["Selling"] = "FALSE"
+        new_row["Is Listed"] = "FALSE"
+        new_row["Best Price"] = ""
+        new_row["List Price"] = ""
+        new_row["Listed Price"] = ""
+        new_row["ManaPool Product ID"] = ""
+        new_row["TCGPlayer SKU"] = ""
+        new_row["Best Price Updated"] = ""
+        new_row["Listed Price Updated"] = ""
+        new_row["Last Listed"] = ""
+        new_row["Last Updated"] = now
+        new_row["Key"] = row_key(new_row)
+
+        new_owned = owned - 1
+        self.df.at[idx, "Quantity Owned"] = str(new_owned)
+        self.df.at[idx, "Quantity Listed"] = str(min(safe_int(self.df.at[idx, "Quantity Listed"]), new_owned))
+        self.df.at[idx, "Sell Quantity"] = str(min(safe_int(self.df.at[idx, "Sell Quantity"]), new_owned))
+        self.df.at[idx, "Is Listed"] = bool_text(safe_int(self.df.at[idx, "Quantity Listed"]) > 0)
+        self.df.at[idx, "Selling"] = bool_text(safe_int(self.df.at[idx, "Sell Quantity"]) > 0)
+        self.df.at[idx, "Last Updated"] = now
+
+        target_key = safe(new_row.get("Key"))
+        target_idx = None
+        for candidate_idx, row in self.df.iterrows():
+            if candidate_idx != idx and safe(row.get("Key")) == target_key:
+                target_idx = candidate_idx
+                break
+
+        if target_idx is None:
+            self.df = pd.concat([self.df, pd.DataFrame([new_row])], ignore_index=True)
+            action_text = f"Created a new {new_condition} row."
+        else:
+            self.df.at[target_idx, "Quantity Owned"] = str(safe_int(self.df.at[target_idx, "Quantity Owned"]) + 1)
+            self.df.at[target_idx, "Last Updated"] = now
+            action_text = f"Added 1 copy to the existing {new_condition} row."
+
+        self.df = normalize_ledger_df(self.df)
+        self.apply_filters(keep_status=True)
+        self.set_status(action_text)
+        try:
+            self.sheets.write_inventory(self.df)
+        except Exception as exc:
+            self.log_output(f"Google Sheets Sync Error after grading split: {exc}")
+            messagebox.showwarning(
+                "Sheets Sync Failed",
+                "The grading split was applied locally, but Google Sheets could not be updated.\n\n"
+                f"{exc}"
+            )
 
     # ---------- Selection ----------
     def toggle_selected_row(self, event=None):
