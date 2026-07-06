@@ -667,11 +667,13 @@ class ManaPoolSellerDashboard:
         self.listed_cards_var = tk.StringVar(value="0")
         self.selling_cards_var = tk.StringVar(value="0")
         self.value_var = tk.StringVar(value="$0.00")
+        self.sold_import_as_of_var = tk.StringVar(value=datetime.now().date().isoformat())
 
         self.pricing_mode_var = tk.StringVar(value="Undercut $0.01")
         self.undercut_percent_var = tk.StringVar(value="3")
         self.floor_price_var = tk.StringVar(value="0.10")
 
+        self.active_view = "collection"
         self.sort_column = None
         self.sort_reverse = False
         self.context_row_id = None
@@ -714,7 +716,7 @@ class ManaPoolSellerDashboard:
         tk.Label(left, text="Sheets-first MTG listing manager", bg="#111827", fg="#9ca3af", font=("Segoe UI", 9)).pack(anchor="w")
 
         actions = tk.Frame(header, bg="#111827")
-        actions.pack(side=tk.RIGHT)
+        # Legacy all-in-one toolbar is kept constructed but hidden; tabbed action bars below expose scoped controls.
 
         # ---- DATA GROUP ----
         data_frame = tk.LabelFrame(actions, text="Data", bg="#111827", fg="#e5e7eb")
@@ -758,7 +760,47 @@ class ManaPoolSellerDashboard:
         self.metric(metrics, "Selected to Push", self.selling_cards_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
         self.metric(metrics, "List Value", self.value_var).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
 
-        
+        self.view_tabs = ttk.Notebook(self.root)
+        self.view_tabs.pack(fill=tk.X, padx=12, pady=(4, 0))
+        self.view_tabs.bind("<<NotebookTabChanged>>", self.handle_view_changed)
+
+        collection_tab = tk.Frame(self.view_tabs, bg="#111827")
+        listed_tab = tk.Frame(self.view_tabs, bg="#111827")
+        sold_tab = tk.Frame(self.view_tabs, bg="#111827")
+        tools_tab = tk.Frame(self.view_tabs, bg="#111827")
+
+        self.view_tabs.add(collection_tab, text="Collection")
+        self.view_tabs.add(listed_tab, text="Listed")
+        self.view_tabs.add(sold_tab, text="Sold")
+        self.view_tabs.add(tools_tab, text="Tools")
+
+        collection_actions = tk.Frame(collection_tab, bg="#111827")
+        collection_actions.pack(fill=tk.X, padx=8, pady=8)
+        self.button(collection_actions, "Reload", self.load_from_google_sheets).pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Merge CSV", self.import_csv).pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Sync Sheets", self.sync_sheets).pack(side=tk.LEFT, padx=2)
+        self.button(collection_actions, "Mark Max", self.mark_selected_max_for_sale).pack(side=tk.LEFT, padx=2)
+
+        listed_actions = tk.Frame(listed_tab, bg="#111827")
+        listed_actions.pack(fill=tk.X, padx=8, pady=8)
+        self.button(listed_actions, "Sync MP", self.sync_from_manapool).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Select Listed", self.select_all_listed).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Refresh Prices", self.refresh_best_prices).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Smart Price", self.update_listed_prices_to_best).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Unlist Selected", self.unlist_selected_from_manapool).pack(side=tk.LEFT, padx=2)
+        self.button(listed_actions, "Push API", self.api_push_selected, primary=True).pack(side=tk.LEFT, padx=2)
+
+        sold_actions = tk.Frame(sold_tab, bg="#111827")
+        sold_actions.pack(fill=tk.X, padx=8, pady=8)
+        self.button(sold_actions, "Mark Sold", self.mark_selected_sold).pack(side=tk.LEFT, padx=2)
+        tk.Label(sold_actions, text="Import as-of", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
+        tk.Entry(sold_actions, textvariable=self.sold_import_as_of_var, width=12).pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Review Sold", self.review_sold_import).pack(side=tk.LEFT, padx=2)
+
+        tools_actions = tk.Frame(tools_tab, bg="#111827")
+        tools_actions.pack(fill=tk.X, padx=8, pady=8)
+        self.button(tools_actions, "API Test", self.api_test_connection).pack(side=tk.LEFT, padx=2)
+        self.button(tools_actions, "Dry Run", self.api_dry_run).pack(side=tk.LEFT, padx=2)
 
         controls = tk.Frame(self.root, bg="#111827")
         controls.pack(fill=tk.X, padx=12, pady=4)
@@ -861,6 +903,19 @@ class ManaPoolSellerDashboard:
         self.tree.tag_configure("rare", background="#422006", foreground="#fffbeb")
         self.tree.tag_configure("mythic", background="#3b0764", foreground="#f5f3ff")
         self.tree.tag_configure("normal", background="#0f172a", foreground="#e5e7eb")
+
+    def handle_view_changed(self, event=None):
+        selected_tab = self.view_tabs.tab(self.view_tabs.select(), "text").lower()
+        if selected_tab == "listed":
+            self.active_view = "listed"
+        elif selected_tab == "sold":
+            self.active_view = "sold"
+        elif selected_tab == "tools":
+            self.active_view = "tools"
+        else:
+            self.active_view = "collection"
+        self.apply_filters(keep_status=True)
+        self.set_status(f"Viewing {selected_tab}.")
 
     def handle_double_click(self, event):
         region = self.tree.identify("region", event.x, event.y)
@@ -1086,6 +1141,25 @@ class ManaPoolSellerDashboard:
         except Exception as exc:
             self.log_output(f"Google Sheets Sync Error: {exc}")
             messagebox.showerror("Google Sheets Error", str(exc))
+
+    def review_sold_import(self):
+        as_of_text = self.sold_import_as_of_var.get().strip()
+        try:
+            datetime.strptime(as_of_text, "%Y-%m-%d")
+        except ValueError:
+            messagebox.showerror("Invalid Date", "Use YYYY-MM-DD for the sold import as-of date.")
+            return
+
+        messagebox.showinfo(
+            "Sold Import Review",
+            "Sold import review is ready for the ManaPool order matching step.\n\n"
+            f"As-of date: {as_of_text}\n\n"
+            "Planned behavior:\n"
+            "- Sales before this date default to tracking-only import.\n"
+            "- Sales on or after this date default to inventory-adjusting import.\n"
+            "- Each matched sale will require approval before inventory changes."
+        )
+        self.set_status(f"Sold import review as-of date set to {as_of_text}.")
 
     def import_csv(self):
         file_path = filedialog.askopenfilename(title="Select ManaBox CSV", filetypes=[("CSV files", "*.csv")])
@@ -1316,6 +1390,13 @@ class ManaPoolSellerDashboard:
     # ---------- Table rendering ----------
     def apply_filters(self, keep_status=False):
         df = normalize_ledger_df(self.df)
+        if self.active_view == "listed":
+            df = df[df["Quantity Listed"].apply(safe_int) > 0]
+        elif self.active_view == "sold":
+            df = df[
+                df["Selling"].apply(bool_from_value)
+                | (df["Quantity Listed"].apply(safe_int) > 0)
+            ]
         query = self.search_var.get().strip().lower()
         if query:
             df = df[df.apply(lambda row: query in " ".join([safe(v).lower() for v in row.values]), axis=1)]

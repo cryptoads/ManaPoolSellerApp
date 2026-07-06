@@ -463,6 +463,19 @@ On startup, the app will try to load inventory from Google Sheets.
 
 ## 🖥️ UI Overview
 
+The app is organized into tabs so each workflow shows the buttons that belong to it.
+
+| Tab | Purpose |
+|---|---|
+| Collection | Load, merge, sync, and prepare owned cards |
+| Listed | Sync ManaPool, refresh pricing, push listings, and unlist cards |
+| Sold | Mark cards sold and prepare ManaPool sold-import review |
+| Tools | API tests and dry-run payload generation |
+
+Switching tabs also changes the table view. `Collection` shows the owned collection, `Listed` focuses on rows with `Quantity Listed` greater than zero, and `Sold` focuses on rows that are listed or selected for sale while the sold-import workflow is built out.
+
+---
+
 ### Data
 
 Data actions control Google Sheets and ManaBox imports.
@@ -670,6 +683,20 @@ Condition
 If the row is currently listed, the app warns you before continuing. Continuing clears the local listed state and stale ManaPool product/SKU fields, keeps the previous listed quantity selected as `Sell Quantity`, and preserves the old listed price as `List Price` when available.
 
 If the old printing is already live on ManaPool, unlist the old listing before pushing the corrected row.
+
+---
+
+## ManaPool Sold Import Planning
+
+The `Sold` tab includes an `Import as-of` date and a `Review Sold` entry point for the sold-card import workflow.
+
+Use the as-of date as the clean starting line for automated inventory adjustments. For example, using `2026-07-06` means:
+
+- Sales before that date should default to tracking-only import.
+- Sales on or after that date should default to inventory-adjusting import.
+- Each matched sold card should be reviewed and approved before inventory changes.
+
+The review workflow is intentionally approval-first because older sold cards may already have been marked manually. Future ManaPool order matching should store stable order or order-item IDs in the sold ledger so repeated imports do not double-count sales.
 
 ---
 
