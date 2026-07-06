@@ -706,6 +706,7 @@ Use the as-of date as the clean starting line for automated inventory adjustment
 - Sales on or after that date default to `adjust` mode.
 - You approve the rows to import from the review window before inventory changes.
 - You can toggle selected rows between `tracking` and `adjust` before importing.
+- You can bulk-select review rows with `Select All`, `Select Matched`, `Select Tracking`, or `Select Adjust`.
 
 Import modes:
 

@@ -1450,6 +1450,8 @@ class ManaPoolSellerDashboard:
 
         buttons = tk.Frame(dialog, bg="#111827")
         buttons.pack(fill=tk.X, padx=12, pady=12)
+        selected_count_var = tk.StringVar(value=f"Selected 0 of {len(sales)}")
+        tk.Label(buttons, textvariable=selected_count_var, bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(0, 10))
 
         def refresh_sale_row(item_id):
             sale = sales[int(item_id)]
@@ -1464,6 +1466,21 @@ class ManaPoolSellerDashboard:
                 sale.get("_match_status"),
             ))
 
+        def update_selected_count(event=None):
+            selected_count_var.set(f"Selected {len(tree.selection())} of {len(sales)}")
+
+        def select_where(predicate):
+            matching_ids = [str(idx) for idx, sale in enumerate(sales) if predicate(sale)]
+            tree.selection_set(matching_ids)
+            if matching_ids:
+                tree.focus(matching_ids[0])
+                tree.see(matching_ids[0])
+            update_selected_count()
+
+        def clear_selection():
+            tree.selection_remove(tree.selection())
+            update_selected_count()
+
         def toggle_mode():
             selected_ids = tree.selection()
             if not selected_ids:
@@ -1473,6 +1490,8 @@ class ManaPoolSellerDashboard:
                 sale = sales[int(item_id)]
                 sale["Import Mode"] = "tracking" if sale.get("Import Mode") == "adjust" else "adjust"
                 refresh_sale_row(item_id)
+
+        tree.bind("<<TreeviewSelect>>", update_selected_count)
 
         def import_selected():
             selected_ids = tree.selection()
@@ -1495,6 +1514,11 @@ class ManaPoolSellerDashboard:
         self.button(buttons, "Import Selected", import_selected, primary=True).pack(side=tk.RIGHT, padx=2)
         self.button(buttons, "Import All Matched", import_all_matched).pack(side=tk.RIGHT, padx=2)
         self.button(buttons, "Toggle Mode", toggle_mode).pack(side=tk.RIGHT, padx=2)
+        self.button(buttons, "Clear", clear_selection).pack(side=tk.LEFT, padx=2)
+        self.button(buttons, "Select Adjust", lambda: select_where(lambda sale: sale.get("Import Mode") == "adjust")).pack(side=tk.LEFT, padx=2)
+        self.button(buttons, "Select Tracking", lambda: select_where(lambda sale: sale.get("Import Mode") == "tracking")).pack(side=tk.LEFT, padx=2)
+        self.button(buttons, "Select Matched", lambda: select_where(lambda sale: sale.get("_matched_idx") is not None)).pack(side=tk.LEFT, padx=2)
+        self.button(buttons, "Select All", lambda: select_where(lambda sale: True)).pack(side=tk.LEFT, padx=2)
 
     def apply_sold_imports(self, sales):
         if not sales:
