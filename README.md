@@ -694,17 +694,47 @@ If the old printing is already live on ManaPool, unlist the old listing before p
 
 ---
 
-## ManaPool Sold Import Planning
+## ManaPool Sold Import Review
 
-The `Sold` tab includes an `Import as-of` date and a `Review Sold` entry point for the sold-card import workflow.
+The `Sold` tab includes an `Import as-of` date and a `Review Sold` workflow.
+
+`Review Sold` pulls recent ManaPool seller orders and builds an approval queue. The app skips any ManaPool sale that already has an imported `Import ID` in the `Sold Inventory` tab.
 
 Use the as-of date as the clean starting line for automated inventory adjustments. For example, using `2026-07-06` means:
 
-- Sales before that date should default to tracking-only import.
-- Sales on or after that date should default to inventory-adjusting import.
-- Each matched sold card should be reviewed and approved before inventory changes.
+- Sales before that date default to `tracking` mode.
+- Sales on or after that date default to `adjust` mode.
+- You approve the rows to import from the review window before inventory changes.
+- You can toggle selected rows between `tracking` and `adjust` before importing.
 
-The review workflow is intentionally approval-first because older sold cards may already have been marked manually. Future ManaPool order matching should store stable order or order-item IDs in the sold ledger so repeated imports do not double-count sales.
+Import modes:
+
+| Mode | Behavior |
+|---|---|
+| tracking | Adds the sale to `Sold Inventory` without changing owned or listed quantities |
+| adjust | Adds the sale to `Sold Inventory` and reduces `Quantity Owned`, `Quantity Listed`, and `Sell Quantity` on the matched row |
+
+The importer matches sold cards to local rows using the same identity fields as the rest of the app:
+
+```text
+Scryfall ID
+Set code
+Collector number
+Foil
+Condition
+Language
+```
+
+Imported ManaPool sales add these audit fields to `Sold Inventory`:
+
+```text
+Import Source
+Import ID
+Import Mode
+Imported At
+```
+
+This lets you rerun the import safely without double-counting sales that were already imported.
 
 ---
 

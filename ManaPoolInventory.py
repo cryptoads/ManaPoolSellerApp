@@ -183,6 +183,14 @@ def price_text(value):
     return f"{number:.2f}"
 
 
+def spreadsheet_column_name(index):
+    name = ""
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
 def money(value):
     number = safe_float(value)
     if number <= 0:
@@ -448,6 +456,10 @@ class SheetsClient:
             "ManaPool Product ID",
             "TCGPlayer SKU",
             "Key",
+            "Import Source",
+            "Import ID",
+            "Import Mode",
+            "Imported At",
         ]
 
         existing = sold_sheet.get_all_values()
@@ -460,6 +472,10 @@ class SheetsClient:
             # Do NOT clear existing sold inventory.
             # If headers differ, still append using our fixed column order.
             next_row = len(existing) + 1
+            existing_headers = existing[0] if existing else []
+            if existing_headers[:len(headers)] != headers:
+                merged_headers = headers + [header for header in existing_headers if header and header not in headers]
+                sold_sheet.update(range_name="A1", values=[merged_headers])
 
             # If A1 is blank for some reason, write headers without deleting rows.
             if not existing[0] or not any(existing[0]):
@@ -467,11 +483,22 @@ class SheetsClient:
                 next_row = max(2, next_row)
 
         row_values = [safe(sold_row.get(col, "")) for col in headers]
+        last_col = spreadsheet_column_name(len(headers))
 
         sold_sheet.update(
-            range_name=f"A{next_row}:S{next_row}",
+            range_name=f"A{next_row}:{last_col}{next_row}",
             values=[row_values]
         )
+
+    def read_sold_import_ids(self, source="manapool"):
+        sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
+        rows = sold_sheet.get_all_records()
+        source = safe(source).lower()
+        import_ids = set()
+        for row in rows:
+            if safe(row.get("Import Source")).lower() == source and safe(row.get("Import ID")):
+                import_ids.add(safe(row.get("Import ID")))
+        return import_ids
 
 # ============================================================
 # ManaPool API
@@ -510,6 +537,9 @@ class ManaPoolAPI:
 
     def test_connection(self):
         return self.request("GET", "/seller/orders", params={"limit": 1})
+
+    def get_seller_orders(self, limit=100):
+        return self.request("GET", "/seller/orders", params={"limit": limit})
     
     def build_unlist_payload(self, df):
         payload = self.build_inventory_payload(df)
@@ -1198,21 +1228,310 @@ class ManaPoolSellerDashboard:
     def review_sold_import(self):
         as_of_text = self.sold_import_as_of_var.get().strip()
         try:
-            datetime.strptime(as_of_text, "%Y-%m-%d")
+            as_of_date = datetime.strptime(as_of_text, "%Y-%m-%d").date()
         except ValueError:
             messagebox.showerror("Invalid Date", "Use YYYY-MM-DD for the sold import as-of date.")
             return
 
-        messagebox.showinfo(
-            "Sold Import Review",
-            "Sold import review is ready for the ManaPool order matching step.\n\n"
-            f"As-of date: {as_of_text}\n\n"
-            "Planned behavior:\n"
-            "- Sales before this date default to tracking-only import.\n"
-            "- Sales on or after this date default to inventory-adjusting import.\n"
-            "- Each matched sale will require approval before inventory changes."
+        try:
+            imported_ids = self.sheets.read_sold_import_ids("manapool")
+            result = self.manapool_api.get_seller_orders(limit=100)
+            sales = self.extract_manapool_sales(result, as_of_date, imported_ids)
+        except Exception as exc:
+            self.log_output(f"Sold Import Review Error: {exc}")
+            messagebox.showerror("Sold Import Review Error", str(exc))
+            return
+
+        if not sales:
+            messagebox.showinfo("Sold Import Review", "No new ManaPool sold cards were found to review.")
+            self.set_status("No new ManaPool sold cards found.")
+            return
+
+        self.show_sold_import_review(sales)
+        self.set_status(f"Loaded {len(sales)} ManaPool sold cards for review.")
+
+    def first_value(self, data, keys, default=""):
+        if not isinstance(data, dict):
+            return default
+        for key in keys:
+            value = data.get(key)
+            if value not in [None, ""]:
+                return value
+        return default
+
+    def parse_manapool_datetime(self, value):
+        text = safe(value)
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except Exception:
+            for candidate, fmt in [(text[:19], "%Y-%m-%d %H:%M:%S"), (text[:10], "%Y-%m-%d")]:
+                try:
+                    return datetime.strptime(candidate, fmt)
+                except Exception:
+                    pass
+        return None
+
+    def manapool_order_list(self, result):
+        if isinstance(result, list):
+            return result
+        if not isinstance(result, dict):
+            return []
+        for key in ["data", "orders", "items", "results"]:
+            value = result.get(key)
+            if isinstance(value, list):
+                return value
+        return []
+
+    def manapool_order_items(self, order):
+        if not isinstance(order, dict):
+            return []
+        for key in ["items", "line_items", "order_items", "sold_items", "inventory_items"]:
+            value = order.get(key)
+            if isinstance(value, list):
+                return value
+        return [order]
+
+    def sale_single_data(self, item):
+        if not isinstance(item, dict):
+            return {}
+        product = item.get("product") or item.get("inventory", {}).get("product") or {}
+        single = product.get("single") if isinstance(product, dict) else {}
+        if isinstance(single, dict):
+            return single
+        return {}
+
+    def sale_import_id(self, order, item, item_number):
+        order_id = self.first_value(order, ["id", "order_id", "uuid", "number", "order_number"], "order")
+        item_id = self.first_value(item, ["id", "order_item_id", "line_item_id", "uuid"], "")
+        sku = self.first_value(item, ["tcgplayer_sku", "tcgplayer_sku_id"], "")
+        if not sku:
+            product = item.get("product", {}) if isinstance(item, dict) else {}
+            sku = self.first_value(product, ["tcgplayer_sku", "tcgplayer_sku_id"], "")
+        return "|".join([safe(order_id), safe(item_id or sku or item_number)])
+
+    def extract_manapool_sales(self, result, as_of_date, imported_ids):
+        sales = []
+        orders = self.manapool_order_list(result)
+        self.df = normalize_ledger_df(self.df)
+
+        for order in orders:
+            order_date = self.parse_manapool_datetime(
+                self.first_value(order, ["sold_at", "completed_at", "created_at", "updated_at", "date"])
+            )
+            if not order_date:
+                order_date = datetime.now()
+
+            for item_number, item in enumerate(self.manapool_order_items(order), start=1):
+                if not isinstance(item, dict):
+                    continue
+                single = self.sale_single_data(item)
+                if not single and not any(key in item for key in ["scryfall_id", "name", "set", "number"]):
+                    continue
+
+                import_id = self.sale_import_id(order, item, item_number)
+                if import_id in imported_ids:
+                    continue
+
+                quantity = safe_int(self.first_value(item, ["quantity", "qty", "count"], 1), 1)
+                if quantity <= 0:
+                    continue
+
+                total_cents = safe_int(self.first_value(item, ["price_cents", "total_cents", "subtotal_cents"], 0))
+                unit_cents = safe_int(self.first_value(item, ["unit_price_cents", "sold_price_cents"], 0))
+                if unit_cents <= 0 and total_cents > 0:
+                    unit_cents = int(round(total_cents / quantity))
+
+                finish_id = safe(self.first_value(single, ["finish_id"], self.first_value(item, ["finish_id", "finish"], ""))).upper()
+                condition_id = safe(self.first_value(single, ["condition_id"], self.first_value(item, ["condition_id", "condition"], ""))).upper()
+                language_id = safe(self.first_value(single, ["language_id"], self.first_value(item, ["language_id", "language"], ""))).upper()
+
+                sale_row = {
+                    "Name": safe(self.first_value(single, ["name"], self.first_value(item, ["name", "card_name"], ""))),
+                    "Set code": safe(self.first_value(single, ["set", "set_code"], self.first_value(item, ["set", "set_code"], ""))),
+                    "Set name": "",
+                    "Collector number": safe_collector_number(self.first_value(single, ["number", "collector_number"], self.first_value(item, ["number", "collector_number"], ""))),
+                    "Foil": {"FO": "foil", "NF": "normal", "ET": "etched"}.get(finish_id, safe(self.first_value(item, ["foil", "finish"], "normal")).lower() or "normal"),
+                    "Rarity": "",
+                    "Condition": MANAPOOL_CONDITION_BY_ID.get(condition_id, normalize_condition(self.first_value(item, ["condition"], "near_mint"))),
+                    "Language": language_id.lower() if language_id else safe(self.first_value(item, ["language"], "en")).lower(),
+                    "Scryfall ID": safe(self.first_value(single, ["scryfall_id"], self.first_value(item, ["scryfall_id"], ""))),
+                    "ManaBox ID": "",
+                    "Quantity Sold": str(quantity),
+                    "Sold Price": price_text(unit_cents / 100 if unit_cents else self.first_value(item, ["price", "unit_price"], "")),
+                    "ManaPool Product ID": safe(self.first_value(item, ["product_id"], "")),
+                    "TCGPlayer SKU": safe(self.first_value(item, ["tcgplayer_sku", "tcgplayer_sku_id"], "")),
+                    "Sold At": order_date.isoformat(),
+                    "Import Source": "manapool",
+                    "Import ID": import_id,
+                    "Import Mode": "adjust" if order_date.date() >= as_of_date else "tracking",
+                    "Imported At": "",
+                }
+                sale_row["Key"] = row_key(sale_row)
+                matched_idx = self.find_matching_inventory_index(sale_row)
+                sale_row["_matched_idx"] = matched_idx
+                sale_row["_match_status"] = "matched" if matched_idx is not None else "unmatched"
+                sales.append(sale_row)
+
+        return sales
+
+    def show_sold_import_review(self, sales):
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Review ManaPool Sold Cards")
+        dialog.configure(bg="#111827")
+        dialog.geometry("1180x520")
+        dialog.transient(self.root)
+
+        intro = tk.Label(
+            dialog,
+            text="Select sold cards to import. Tracking-only rows record the sale without changing inventory; adjust rows also reduce owned/listed quantities.",
+            bg="#111827",
+            fg="#e5e7eb",
+            anchor="w",
         )
-        self.set_status(f"Sold import review as-of date set to {as_of_text}.")
+        intro.pack(fill=tk.X, padx=12, pady=(12, 6))
+
+        columns = ["Mode", "Sale Date", "Card", "Set", "Condition", "Qty", "Price", "Match"]
+        tree = ttk.Treeview(dialog, columns=columns, show="headings", selectmode="extended")
+        for column in columns:
+            tree.heading(column, text=column)
+            tree.column(column, width=120, anchor="center")
+        tree.column("Card", width=300, anchor="w")
+        tree.pack(fill=tk.BOTH, expand=True, padx=12, pady=6)
+
+        for idx, sale in enumerate(sales):
+            tree.insert("", "end", iid=str(idx), values=(
+                sale.get("Import Mode"),
+                safe(sale.get("Sold At"))[:10],
+                sale.get("Name"),
+                f"{sale.get('Set code')} #{sale.get('Collector number')}",
+                sale.get("Condition"),
+                sale.get("Quantity Sold"),
+                money(sale.get("Sold Price")),
+                sale.get("_match_status"),
+            ))
+
+        buttons = tk.Frame(dialog, bg="#111827")
+        buttons.pack(fill=tk.X, padx=12, pady=12)
+
+        def refresh_sale_row(item_id):
+            sale = sales[int(item_id)]
+            tree.item(item_id, values=(
+                sale.get("Import Mode"),
+                safe(sale.get("Sold At"))[:10],
+                sale.get("Name"),
+                f"{sale.get('Set code')} #{sale.get('Collector number')}",
+                sale.get("Condition"),
+                sale.get("Quantity Sold"),
+                money(sale.get("Sold Price")),
+                sale.get("_match_status"),
+            ))
+
+        def toggle_mode():
+            selected_ids = tree.selection()
+            if not selected_ids:
+                messagebox.showwarning("No Sales Selected", "Select one or more sold cards to switch between tracking and adjust mode.")
+                return
+            for item_id in selected_ids:
+                sale = sales[int(item_id)]
+                sale["Import Mode"] = "tracking" if sale.get("Import Mode") == "adjust" else "adjust"
+                refresh_sale_row(item_id)
+
+        def import_selected():
+            selected_ids = tree.selection()
+            if not selected_ids:
+                messagebox.showwarning("No Sales Selected", "Select one or more sold cards to import.")
+                return
+            selected_sales = [sales[int(item_id)] for item_id in selected_ids]
+            self.apply_sold_imports(selected_sales)
+            dialog.destroy()
+
+        def import_all_matched():
+            matched_sales = [sale for sale in sales if sale.get("_matched_idx") is not None or sale.get("Import Mode") == "tracking"]
+            if not matched_sales:
+                messagebox.showwarning("No Matched Sales", "No matched or tracking-only sales are available to import.")
+                return
+            self.apply_sold_imports(matched_sales)
+            dialog.destroy()
+
+        self.button(buttons, "Cancel", dialog.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        self.button(buttons, "Import Selected", import_selected, primary=True).pack(side=tk.RIGHT, padx=2)
+        self.button(buttons, "Import All Matched", import_all_matched).pack(side=tk.RIGHT, padx=2)
+        self.button(buttons, "Toggle Mode", toggle_mode).pack(side=tk.RIGHT, padx=2)
+
+    def apply_sold_imports(self, sales):
+        if not sales:
+            return
+
+        if not messagebox.askyesno("Confirm Sold Import", f"Import {len(sales)} approved ManaPool sold card rows?"):
+            return
+
+        now = datetime.now().isoformat()
+        adjusted = 0
+        tracking = 0
+        skipped = 0
+
+        try:
+            for sale in sales:
+                idx = sale.get("_matched_idx")
+                mode = safe(sale.get("Import Mode"))
+                qty = safe_int(sale.get("Quantity Sold"))
+
+                sold_row = {key: value for key, value in sale.items() if not key.startswith("_")}
+                sold_row["Total Sold"] = price_text(qty * safe_float(sold_row.get("Sold Price")))
+                sold_row["Imported At"] = now
+
+                if idx is not None and idx in self.df.index:
+                    row = self.df.loc[idx]
+                    sold_row["Purchase price"] = price_text(row.get("Purchase price"))
+                    sold_row["Listed Price"] = price_text(row.get("Listed Price"))
+                    sold_row["ManaPool Product ID"] = safe(row.get("ManaPool Product ID")) or safe(sold_row.get("ManaPool Product ID"))
+                    sold_row["TCGPlayer SKU"] = safe(row.get("TCGPlayer SKU")) or safe(sold_row.get("TCGPlayer SKU"))
+
+                self.sheets.append_sold_inventory(sold_row)
+
+                if mode == "adjust" and idx is not None and idx in self.df.index:
+                    owned = safe_int(self.df.at[idx, "Quantity Owned"])
+                    listed = safe_int(self.df.at[idx, "Quantity Listed"])
+                    sell_qty = safe_int(self.df.at[idx, "Sell Quantity"])
+
+                    new_owned = max(0, owned - qty)
+                    new_listed = max(0, listed - qty)
+                    new_sell_qty = max(0, sell_qty - qty)
+
+                    self.df.at[idx, "Quantity Owned"] = str(new_owned)
+                    self.df.at[idx, "Quantity Listed"] = str(new_listed)
+                    self.df.at[idx, "Sell Quantity"] = str(new_sell_qty)
+                    self.df.at[idx, "Last Updated"] = now
+
+                    if new_listed <= 0:
+                        self.df.at[idx, "Is Listed"] = "FALSE"
+                        self.df.at[idx, "Listed Price"] = ""
+                        self.df.at[idx, "Listed Price Updated"] = ""
+
+                    if new_sell_qty <= 0:
+                        self.df.at[idx, "Selling"] = "FALSE"
+
+                    if new_owned <= 0:
+                        self.df = self.df.drop(index=idx)
+
+                    adjusted += 1
+                elif mode == "tracking":
+                    tracking += 1
+                else:
+                    skipped += 1
+
+            self.df = normalize_ledger_df(self.df)
+            self.sheets.write_inventory(self.df)
+            self.apply_filters(keep_status=True)
+            messagebox.showinfo(
+                "Sold Import Complete",
+                f"Imported {len(sales)} sold rows.\nAdjusted inventory: {adjusted}\nTracking only: {tracking}\nSkipped adjustments: {skipped}"
+            )
+        except Exception as exc:
+            self.log_output(f"Sold Import Error: {exc}")
+            messagebox.showerror("Sold Import Error", str(exc))
 
     def import_csv(self):
         file_path = filedialog.askopenfilename(title="Select ManaBox CSV", filetypes=[("CSV files", "*.csv")])
