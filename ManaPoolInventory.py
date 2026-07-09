@@ -998,6 +998,7 @@ class ManaPoolSellerDashboard:
         sold_actions.pack(fill=tk.X, padx=8, pady=8)
         self.button(sold_actions, "Mark Sold", self.mark_selected_sold, tooltip="Manually record a sale, append it to Sold Inventory, and reduce owned/listed quantity.").pack(side=tk.LEFT, padx=2)
         self.button(sold_actions, "Refresh Sold", self.load_sold_history, tooltip="Reload the Sold Inventory sheet and refresh sold analytics.").pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Edit Sold", self.edit_selected_sold_item, tooltip="Edit Quantity Sold, Sold Price, Total Sold, and cost fields for a sold-history row.").pack(side=tk.LEFT, padx=2)
         self.button(sold_actions, "Remove Sold", self.remove_selected_sold_items, tooltip="Remove selected sold-history rows, optionally restoring their quantities to active inventory.").pack(side=tk.LEFT, padx=2)
         tk.Label(sold_actions, text="Import as-of", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
         tk.Entry(sold_actions, textvariable=self.sold_import_as_of_var, width=12).pack(side=tk.LEFT, padx=2)
@@ -1155,6 +1156,14 @@ class ManaPoolSellerDashboard:
 
     def handle_double_click(self, event):
         if self.active_view == "sold":
+            region = self.tree.identify("region", event.x, event.y)
+            column_id = self.tree.identify_column(event.x)
+            if region == "cell" and column_id:
+                col_index = int(column_id.replace("#", "")) - 1
+                column_name = SOLD_TABLE_COLUMNS[col_index]
+                if column_name in ["Quantity Sold", "Sold Price", "Total Sold"]:
+                    self.edit_selected_sold_item()
+                    return
             self.view_selected_card_image()
             return
 
@@ -2328,6 +2337,101 @@ class ManaPoolSellerDashboard:
 
         self.df = normalize_ledger_df(self.df)
         return restored
+
+    def edit_selected_sold_item(self):
+        if self.active_view != "sold":
+            messagebox.showwarning("Sold View Required", "Open the Sold tab and select a sold row first.")
+            return
+
+        selected_ids = list(self.tree.selection())
+        if len(selected_ids) > 1:
+            messagebox.showwarning("One Row Only", "Select one sold row to edit.")
+            return
+
+        row_id = selected_ids[0] if selected_ids else self.tree.focus()
+        if not row_id:
+            messagebox.showwarning("No Sold Row Selected", "Select a sold row to edit.")
+            return
+
+        idx = int(row_id)
+        if idx not in self.sold_df.index:
+            return
+
+        row = self.sold_df.loc[idx]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Sold Item")
+        dialog.configure(bg="#111827")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text=f"{safe(row.get('Name'))} - {safe(row.get('Set code'))} #{safe(row.get('Collector number'))}",
+            bg="#111827",
+            fg="#f9fafb",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        fields = [
+            ("Quantity Sold", "Quantity Sold", str(safe_int(row.get("Quantity Sold")))),
+            ("Sold Price", "Sold Price", price_text(row.get("Sold Price"))),
+            ("Total Sold / Earnings", "Total Sold", price_text(row.get("Total Sold"))),
+            ("Purchase Price", "Purchase price", price_text(row.get("Purchase price"))),
+            ("Listed Price", "Listed Price", price_text(row.get("Listed Price"))),
+        ]
+        variables = {}
+
+        form = tk.Frame(dialog, bg="#111827")
+        form.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        for row_number, (label, column, value) in enumerate(fields):
+            tk.Label(form, text=label, bg="#111827", fg="#e5e7eb").grid(row=row_number, column=0, sticky="w", pady=3)
+            var = tk.StringVar(value=value)
+            variables[column] = var
+            tk.Entry(form, textvariable=var, width=20).grid(row=row_number, column=1, sticky="ew", padx=(10, 0), pady=3)
+
+        buttons = tk.Frame(dialog, bg="#111827")
+        buttons.pack(fill=tk.X, padx=12, pady=(4, 12))
+
+        def save():
+            qty = safe_int(variables["Quantity Sold"].get(), -1)
+            sold_price = safe_float(variables["Sold Price"].get(), -1)
+            total_sold = safe_float(variables["Total Sold"].get(), -1)
+            purchase_price = safe_float(variables["Purchase price"].get(), -1)
+            listed_price = safe_float(variables["Listed Price"].get(), -1)
+
+            if qty <= 0:
+                messagebox.showerror("Invalid Quantity", "Quantity Sold must be greater than 0.")
+                return
+            if sold_price < 0 or total_sold < 0 or purchase_price < 0 or listed_price < 0:
+                messagebox.showerror("Invalid Amount", "Dollar amounts cannot be negative.")
+                return
+
+            self.sold_df.at[idx, "Quantity Sold"] = str(qty)
+            self.sold_df.at[idx, "Sold Price"] = price_text(sold_price)
+            self.sold_df.at[idx, "Total Sold"] = price_text(total_sold)
+            self.sold_df.at[idx, "Purchase price"] = price_text(purchase_price)
+            self.sold_df.at[idx, "Listed Price"] = price_text(listed_price)
+            self.sold_df = normalize_sold_df(self.sold_df)
+
+            try:
+                self.sheets.write_sold_inventory(self.sold_df)
+                self.apply_filters(keep_status=True)
+                self.set_status("Updated sold item.")
+                dialog.destroy()
+            except Exception as exc:
+                self.log_output(f"Edit Sold Item Error: {exc}")
+                messagebox.showerror("Edit Sold Item Error", str(exc))
+
+        self.button(buttons, "Cancel", dialog.destroy).pack(side=tk.RIGHT, padx=(6, 0))
+        self.button(buttons, "Save", save, primary=True).pack(side=tk.RIGHT)
+        dialog.bind("<Return>", lambda *_: save())
+        dialog.bind("<Escape>", lambda *_: dialog.destroy())
+
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - (dialog.winfo_width() // 2)
+        y = self.root.winfo_rooty() + (self.root.winfo_height() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
     def remove_selected_sold_items(self):
         if self.active_view != "sold":

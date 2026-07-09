@@ -718,6 +718,8 @@ Tracking-only ManaPool imports are added to `Sold Inventory` and appear in this 
 
 Double-click a sold row, or right-click and choose `View card image`, to open a Scryfall image popup for that card. Double-faced cards include a `Flip` button.
 
+Use `Edit Sold` to correct sale numbers after import. You can update `Quantity Sold`, `Sold Price`, `Total Sold`, `Purchase price`, and `Listed Price`. `Total Sold` is editable separately, so it can represent your actual earnings even when it is not simply quantity times sold price.
+
 Use `Remove Sold` when a sold record should no longer count because of a cancellation, return, lost package, or correction. You can remove one or more selected sold rows.
 
 When removing sold rows:
