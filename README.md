@@ -463,6 +463,19 @@ On startup, the app will try to load inventory from Google Sheets.
 
 ## 🖥️ UI Overview
 
+The app is organized into tabs so each workflow shows the buttons that belong to it.
+
+| Tab | Purpose |
+|---|---|
+| Collection | Load, merge, sync, prepare owned cards, and push newly selected listings |
+| Listed | Sync ManaPool, refresh pricing, push listings, and unlist cards |
+| Sold | Review sold-card history, sold analytics, manual sold entry, and ManaPool sold imports |
+| Tools | API tests and dry-run payload generation |
+
+Switching tabs also changes the table view. `Collection` shows the owned collection, `Listed` focuses on rows with `Quantity Listed` greater than zero, and `Sold` shows rows from the `Sold Inventory` sheet.
+
+---
+
 ### Data
 
 Data actions control Google Sheets and ManaBox imports.
@@ -494,8 +507,49 @@ Listing actions affect ManaPool inventory and sales state.
 | Button | Purpose |
 |---|---|
 | Mark Max | Mark all available unlisted copies for sale |
+| Adjust Owned | Change owned quantity for non-sale activity such as trades, gifts, lost cards, damage, or corrections |
 | Mark Sold | Record a completed sale |
 | Push API | Push selected listings to ManaPool |
+
+`Mark Max` works on the focused row. It sets `Sell Quantity` to:
+
+```text
+Quantity Owned - Quantity Listed
+```
+
+and marks that row as `Selling`. Use it when you want to list every unlisted copy you own for that row.
+
+`Adjust Owned` changes `Quantity Owned` without creating a sold record. The app will not let you set `Quantity Owned` below `Quantity Listed`; unlist those copies first if needed.
+
+---
+
+### Table Editing and Right-Click Actions
+
+The inventory table supports quick row edits:
+
+| Action | Purpose |
+|---|---|
+| Double-click `Sell Quantity` | Edit how many copies are selected for the next listing push |
+| Double-click `List Price` | Edit the price to push |
+| Double-click `Condition` | Choose the ManaPool condition for that row |
+| Right-click -> View card image | Open a Scryfall card image popup for the selected row; double-faced cards include a Flip button |
+| Right-click -> Adjust quantity owned | Change owned quantity without recording a sale |
+| Right-click -> Change grading for one copy | Move one owned copy into a new condition row |
+| Right-click -> Change card/set details | Change the card printing or set identity for a row |
+
+Supported ManaPool conditions are:
+
+```text
+near_mint
+lightly_played
+moderately_played
+heavily_played
+damaged
+```
+
+Changing grading for one copy is available only when `Quantity Owned` is greater than 1. The app reduces the original row by one owned copy and creates a new row at the selected condition. If that exact card, finish, language, and condition already exists, the app adds the copy to that existing row instead.
+
+Changing card/set details lets you correct the card identity fields that determine which ManaPool variant is pushed. If the row is already listed, the app clears the local listed state and stale ManaPool mapping so you can push the corrected printing cleanly.
 
 ---
 
@@ -520,6 +574,7 @@ Debug and developer tools.
 | Best Price | Current best price from ManaPool |
 | List Price | Price you intend to push |
 | Listed Price | Price currently live on ManaPool |
+| Condition | ManaPool condition used for matching and pushing the listing |
 | Selling | Selected for the current action |
 | Is Listed | Currently listed on ManaPool |
 | ManaPool Product ID | ManaPool product identifier |
@@ -581,6 +636,141 @@ The app will:
   - Quantity Listed
   - Listed Price
   - Last Listed
+
+---
+
+## Listed Inventory Value
+
+The `List Value` metric shows the value of everything currently listed on ManaPool.
+
+```text
+List Value = Quantity Listed * Listed Price
+```
+
+Rows count toward this value whenever `Quantity Listed` is greater than zero.
+
+---
+
+## Correcting Listed Inventory
+
+### Change the Grade of One Copy
+
+Use this when a row has multiple owned copies and one copy is a different condition.
+
+1. Right-click the row.
+2. Choose `Change grading for one copy`.
+3. Select the new condition.
+
+The app will:
+
+- Reduce the original row's `Quantity Owned` by 1
+- Create or update a row for the selected condition
+- Clear stale pricing and ManaPool mapping fields on the new condition row
+- Save the inventory update back to Google Sheets
+
+The new condition row starts unlisted. Set its `Sell Quantity` and `List Price`, then push it when ready.
+
+### Change the Card or Set
+
+Use this when the listed row is the wrong printing, set, collector number, or Scryfall ID.
+
+1. Right-click the row.
+2. Choose `Change card/set details`.
+3. Update the card identity fields.
+
+The editable fields include:
+
+```text
+Name
+Set code
+Set name
+Collector number
+Scryfall ID
+Rarity
+ManaBox ID
+Foil
+Language
+Condition
+```
+
+If the row is currently listed, the app warns you before continuing. Continuing clears the local listed state and stale ManaPool product/SKU fields, keeps the previous listed quantity selected as `Sell Quantity`, and preserves the old listed price as `List Price` when available.
+
+If the old printing is already live on ManaPool, unlist the old listing before pushing the corrected row.
+
+---
+
+## Sold History and Analytics
+
+The `Sold` tab shows the `Sold Inventory` sheet as a sold-card history table.
+
+Use `Refresh Sold` to reload sold history from Google Sheets. The Sold tab also shows quick analytics for the currently visible sold rows:
+
+| Metric | Meaning |
+|---|---|
+| Cards Sold | Sum of `Quantity Sold` |
+| Gross Sales | Sum of `Total Sold`, falling back to `Quantity Sold * Sold Price` when needed |
+| Est. Profit | Gross sales minus `Quantity Sold * Purchase price` |
+| Top Set | Set code with the most sold quantity in the current sold view |
+
+Search and rarity filters apply to the sold table too, so the analytics update for the visible sold rows.
+
+Tracking-only ManaPool imports are added to `Sold Inventory` and appear in this table. They do not adjust active inventory.
+
+Double-click a sold row, or right-click and choose `View card image`, to open a Scryfall image popup for that card. Double-faced cards include a `Flip` button.
+
+Use `Remove Sold` when a sold record should no longer count because of a cancellation, return, lost package, or correction. You can remove one or more selected sold rows.
+
+When removing sold rows:
+
+- Choose `Yes` to remove the sold row and restore the sold quantity to active inventory.
+- Choose `No` to remove the sold row only.
+- The removed row is copied to the `Removed Sold Imports` sheet with the reason and removal timestamp.
+- ManaPool imports removed this way keep their `Import ID` in the removed ledger so they do not reappear in future sold-import reviews.
+
+---
+
+## ManaPool Sold Import Review
+
+The `Sold` tab includes an `Import as-of` date and a `Review Sold` workflow.
+
+`Review Sold` pulls recent ManaPool seller orders and builds an approval queue. The app skips any ManaPool sale that already has an imported `Import ID` in the `Sold Inventory` tab.
+
+Use the as-of date as the clean starting line for automated inventory adjustments. For example, using `2026-07-06` means:
+
+- Sales before that date default to `tracking` mode.
+- Sales on or after that date default to `adjust` mode.
+- You approve the rows to import from the review window before inventory changes.
+- You can toggle selected rows between `tracking` and `adjust` before importing.
+- You can bulk-select review rows with `Select All`, `Select Matched`, `Select Tracking`, or `Select Adjust`.
+
+Import modes:
+
+| Mode | Behavior |
+|---|---|
+| tracking | Adds the sale to `Sold Inventory` without changing owned or listed quantities |
+| adjust | Adds the sale to `Sold Inventory` and reduces `Quantity Owned`, `Quantity Listed`, and `Sell Quantity` on the matched row |
+
+The importer matches sold cards to local rows using the same identity fields as the rest of the app:
+
+```text
+Scryfall ID
+Set code
+Collector number
+Foil
+Condition
+Language
+```
+
+Imported ManaPool sales add these audit fields to `Sold Inventory`:
+
+```text
+Import Source
+Import ID
+Import Mode
+Imported At
+```
+
+This lets you rerun the import safely without double-counting sales that were already imported.
 
 ---
 
@@ -763,7 +953,6 @@ Language
 - Better duplicate cleanup tools
 - Pricing alerts
 - Exportable reports
-- Right-click row actions
 - Installer packaging
 
 ---
