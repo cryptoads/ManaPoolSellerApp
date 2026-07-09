@@ -2162,7 +2162,11 @@ class ManaPoolSellerDashboard:
 
     def get_scryfall_card_image_url(self, scryfall_id):
         card_url = f"https://api.scryfall.com/cards/{scryfall_id}"
-        result = requests.get(card_url, timeout=20)
+        headers = {
+            "User-Agent": "ManaPoolSellerDashboard/1.0",
+            "Accept": "application/json",
+        }
+        result = requests.get(card_url, headers=headers, timeout=20)
         result.raise_for_status()
         card = result.json()
 
@@ -2185,7 +2189,11 @@ class ManaPoolSellerDashboard:
         if not image_url:
             raise RuntimeError("Scryfall did not return a card image for this row.")
 
-        image_response = requests.get(image_url, timeout=30)
+        headers = {
+            "User-Agent": "ManaPoolSellerDashboard/1.0",
+            "Accept": "image/png,image/*;q=0.8,*/*;q=0.5",
+        }
+        image_response = requests.get(image_url, headers=headers, timeout=30)
         image_response.raise_for_status()
         encoded = base64.b64encode(image_response.content).decode("ascii")
         photo = tk.PhotoImage(data=encoded)
