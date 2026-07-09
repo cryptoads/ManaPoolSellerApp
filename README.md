@@ -715,6 +715,15 @@ Search and rarity filters apply to the sold table too, so the analytics update f
 
 Tracking-only ManaPool imports are added to `Sold Inventory` and appear in this table. They do not adjust active inventory.
 
+Use `Remove Sold` when a sold record should no longer count because of a cancellation, return, lost package, or correction. You can remove one or more selected sold rows.
+
+When removing sold rows:
+
+- Choose `Yes` to remove the sold row and restore the sold quantity to active inventory.
+- Choose `No` to remove the sold row only.
+- The removed row is copied to the `Removed Sold Imports` sheet with the reason and removal timestamp.
+- ManaPool imports removed this way keep their `Import ID` in the removed ledger so they do not reappear in future sold-import reviews.
+
 ---
 
 ## ManaPool Sold Import Review

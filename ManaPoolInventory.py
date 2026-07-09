@@ -21,6 +21,7 @@ from google.oauth2.service_account import Credentials
 APP_TITLE = "ManaPool Seller Dashboard"
 SHEET_NAME = "ManaPool"
 SOLD_SHEET_NAME = "Sold Inventory"
+REMOVED_SOLD_SHEET_NAME = "Removed Sold Imports"
 CREDS_FILE = "credentials.json"
 ENV_FILE = ".env"
 
@@ -104,6 +105,11 @@ SOLD_COLUMNS = [
     "Import ID",
     "Import Mode",
     "Imported At",
+]
+
+REMOVED_SOLD_COLUMNS = SOLD_COLUMNS + [
+    "Removed At",
+    "Remove Reason",
 ]
 
 TABLE_COLUMNS = [
@@ -506,6 +512,17 @@ class SheetsClient:
         if not df.empty:
             self.sheet.append_rows(df[LEDGER_COLUMNS].values.tolist())
 
+    def write_sold_inventory(self, df):
+        if not self.enabled:
+            raise RuntimeError(self.error or "Google Sheets is not connected.")
+        sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
+        df = normalize_sold_df(df)
+        df = df.fillna("").astype(str)
+        sold_sheet.clear()
+        sold_sheet.append_row(SOLD_COLUMNS)
+        if not df.empty:
+            sold_sheet.append_rows(df[SOLD_COLUMNS].values.tolist())
+
     def get_or_create_worksheet(self, title, rows=1000, cols=30):
         spreadsheet = self.sheet.spreadsheet
 
@@ -548,14 +565,43 @@ class SheetsClient:
             values=[row_values]
         )
 
+    def append_removed_sold_import(self, sold_row, reason=""):
+        removed_sheet = self.get_or_create_worksheet(REMOVED_SOLD_SHEET_NAME)
+        headers = REMOVED_SOLD_COLUMNS
+        existing = removed_sheet.get_all_values()
+
+        if not existing:
+            removed_sheet.update(range_name="A1", values=[headers])
+            next_row = 2
+        else:
+            next_row = len(existing) + 1
+            existing_headers = existing[0] if existing else []
+            if existing_headers[:len(headers)] != headers:
+                merged_headers = headers + [header for header in existing_headers if header and header not in headers]
+                removed_sheet.update(range_name="A1", values=[merged_headers])
+            if not existing[0] or not any(existing[0]):
+                removed_sheet.update(range_name="A1", values=[headers])
+                next_row = max(2, next_row)
+
+        row = dict(sold_row)
+        row["Removed At"] = datetime.now().isoformat()
+        row["Remove Reason"] = reason
+        row_values = [safe(row.get(col, "")) for col in headers]
+        last_col = spreadsheet_column_name(len(headers))
+        removed_sheet.update(
+            range_name=f"A{next_row}:{last_col}{next_row}",
+            values=[row_values]
+        )
+
     def read_sold_import_ids(self, source="manapool"):
-        sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
-        rows = sold_sheet.get_all_records()
         source = safe(source).lower()
         import_ids = set()
-        for row in rows:
-            if safe(row.get("Import Source")).lower() == source and safe(row.get("Import ID")):
-                import_ids.add(safe(row.get("Import ID")))
+        for sheet_name in [SOLD_SHEET_NAME, REMOVED_SOLD_SHEET_NAME]:
+            sheet = self.get_or_create_worksheet(sheet_name)
+            rows = sheet.get_all_records()
+            for row in rows:
+                if safe(row.get("Import Source")).lower() == source and safe(row.get("Import ID")):
+                    import_ids.add(safe(row.get("Import ID")))
         return import_ids
 
 # ============================================================
@@ -950,6 +996,7 @@ class ManaPoolSellerDashboard:
         sold_actions.pack(fill=tk.X, padx=8, pady=8)
         self.button(sold_actions, "Mark Sold", self.mark_selected_sold, tooltip="Manually record a sale, append it to Sold Inventory, and reduce owned/listed quantity.").pack(side=tk.LEFT, padx=2)
         self.button(sold_actions, "Refresh Sold", self.load_sold_history, tooltip="Reload the Sold Inventory sheet and refresh sold analytics.").pack(side=tk.LEFT, padx=2)
+        self.button(sold_actions, "Remove Sold", self.remove_selected_sold_items, tooltip="Remove selected sold-history rows, optionally restoring their quantities to active inventory.").pack(side=tk.LEFT, padx=2)
         tk.Label(sold_actions, text="Import as-of", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
         tk.Entry(sold_actions, textvariable=self.sold_import_as_of_var, width=12).pack(side=tk.LEFT, padx=2)
         self.button(sold_actions, "Review Sold", self.review_sold_import, tooltip="Prepare the approval-first ManaPool sold import workflow using the as-of date.").pack(side=tk.LEFT, padx=2)
@@ -1042,6 +1089,7 @@ class ManaPoolSellerDashboard:
         return frame
 
     def configure_table(self):
+        self.tree.configure(selectmode="browse")
         widths = {
             "Selling": 65,
             "Is Listed": 70,
@@ -1070,6 +1118,7 @@ class ManaPoolSellerDashboard:
         self.tree.tag_configure("normal", background="#0f172a", foreground="#e5e7eb")
 
     def configure_sold_table(self):
+        self.tree.configure(selectmode="extended")
         widths = {
             "Sold At": 150,
             "Name": 260,
@@ -2083,6 +2132,125 @@ class ManaPoolSellerDashboard:
         self.sold_gross_var.set(f"${gross.sum():,.2f}")
         self.sold_profit_var.set(f"${profit.sum():,.2f}")
         self.sold_top_set_var.set(top_set)
+
+    def inventory_row_from_sold_row(self, sold_row, now):
+        qty = safe_int(sold_row.get("Quantity Sold"))
+        row = {
+            "Key": "",
+            "Selling": "FALSE",
+            "Is Listed": "FALSE",
+            "Name": safe(sold_row.get("Name")),
+            "Set code": safe(sold_row.get("Set code")),
+            "Set name": safe(sold_row.get("Set name")),
+            "Collector number": safe_collector_number(sold_row.get("Collector number")),
+            "Foil": safe(sold_row.get("Foil")),
+            "Rarity": safe(sold_row.get("Rarity")),
+            "Condition": normalize_condition(sold_row.get("Condition")),
+            "Language": safe(sold_row.get("Language")),
+            "Scryfall ID": safe(sold_row.get("Scryfall ID")),
+            "ManaBox ID": safe(sold_row.get("ManaBox ID")),
+            "Quantity Owned": str(qty),
+            "Quantity Listed": "0",
+            "Sell Quantity": "0",
+            "Purchase price": price_text(sold_row.get("Purchase price")),
+            "Best Price": "",
+            "List Price": "",
+            "Listed Price": "",
+            "ManaPool Product ID": safe(sold_row.get("ManaPool Product ID")),
+            "TCGPlayer Product ID": "",
+            "TCGPlayer SKU": safe(sold_row.get("TCGPlayer SKU")),
+            "Last Imported": now,
+            "Last Updated": now,
+            "Best Price Updated": "",
+            "Listed Price Updated": "",
+            "Last Listed": "",
+        }
+        row["Key"] = row_key(row)
+        return row
+
+    def restore_sold_rows_to_inventory(self, sold_rows):
+        if not sold_rows:
+            return 0
+
+        now = datetime.now().isoformat()
+        restored = 0
+        self.df = normalize_ledger_df(self.df)
+
+        for sold_row in sold_rows:
+            qty = safe_int(sold_row.get("Quantity Sold"))
+            if qty <= 0:
+                continue
+
+            matched_idx = self.find_matching_inventory_index(sold_row)
+            if matched_idx is not None and matched_idx in self.df.index:
+                self.df.at[matched_idx, "Quantity Owned"] = str(safe_int(self.df.at[matched_idx, "Quantity Owned"]) + qty)
+                self.df.at[matched_idx, "Last Updated"] = now
+            else:
+                self.df = pd.concat([self.df, pd.DataFrame([self.inventory_row_from_sold_row(sold_row, now)])], ignore_index=True)
+            restored += qty
+
+        self.df = normalize_ledger_df(self.df)
+        return restored
+
+    def remove_selected_sold_items(self):
+        if self.active_view != "sold":
+            messagebox.showwarning("Sold View Required", "Open the Sold tab and select one or more sold rows first.")
+            return
+
+        selected_ids = list(self.tree.selection())
+        if not selected_ids:
+            focused = self.tree.focus()
+            selected_ids = [focused] if focused else []
+
+        if not selected_ids:
+            messagebox.showwarning("No Sold Rows Selected", "Select one or more sold rows to remove.")
+            return
+
+        selected_indices = [int(item_id) for item_id in selected_ids if safe(item_id) != ""]
+        sold_rows = [self.sold_df.loc[idx].to_dict() for idx in selected_indices if idx in self.sold_df.index]
+        if not sold_rows:
+            return
+
+        restore_answer = messagebox.askyesnocancel(
+            "Remove Sold Rows",
+            f"Remove {len(sold_rows)} sold row(s) from Sold Inventory?\n\n"
+            "Yes = remove and restore the sold quantities to active inventory\n"
+            "No = remove only\n"
+            "Cancel = stop"
+        )
+        if restore_answer is None:
+            return
+
+        reason = simpledialog.askstring(
+            "Removal Reason",
+            "Optional reason for removing these sold rows:",
+            initialvalue="return/cancel/lost/correction"
+        )
+        if reason is None:
+            return
+
+        restored_qty = 0
+        try:
+            for sold_row in sold_rows:
+                self.sheets.append_removed_sold_import(sold_row, reason)
+
+            if restore_answer:
+                restored_qty = self.restore_sold_rows_to_inventory(sold_rows)
+                self.sheets.write_inventory(self.df)
+
+            self.sold_df = self.sold_df.drop(index=[idx for idx in selected_indices if idx in self.sold_df.index])
+            self.sold_df = normalize_sold_df(self.sold_df)
+            self.sheets.write_sold_inventory(self.sold_df)
+            self.apply_filters(keep_status=True)
+
+            messagebox.showinfo(
+                "Sold Rows Removed",
+                f"Removed {len(sold_rows)} sold row(s).\nRestored quantity to inventory: {restored_qty}"
+            )
+            self.set_status(f"Removed {len(sold_rows)} sold row(s).")
+        except Exception as exc:
+            self.log_output(f"Remove Sold Rows Error: {exc}")
+            messagebox.showerror("Remove Sold Rows Error", str(exc))
 
     def ask_condition(self, title, current_condition):
         dialog = tk.Toplevel(self.root)
