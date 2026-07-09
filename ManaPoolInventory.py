@@ -2160,7 +2160,12 @@ class ManaPoolSellerDashboard:
             return None
         return self.df.loc[idx]
 
-    def get_scryfall_card_image_url(self, scryfall_id):
+    def scryfall_image_url_from_uris(self, image_uris):
+        if not image_uris:
+            return ""
+        return image_uris.get("png") or image_uris.get("normal") or image_uris.get("large") or image_uris.get("small") or ""
+
+    def get_scryfall_card_image_faces(self, scryfall_id):
         card_url = f"https://api.scryfall.com/cards/{scryfall_id}"
         headers = {
             "User-Agent": "ManaPoolSellerDashboard/1.0",
@@ -2170,14 +2175,19 @@ class ManaPoolSellerDashboard:
         result.raise_for_status()
         card = result.json()
 
-        image_uris = card.get("image_uris")
-        if not image_uris and card.get("card_faces"):
-            image_uris = card["card_faces"][0].get("image_uris")
-        if not image_uris:
-            return ""
-        return image_uris.get("png") or image_uris.get("normal") or image_uris.get("large") or image_uris.get("small") or ""
+        faces = []
+        top_image_url = self.scryfall_image_url_from_uris(card.get("image_uris"))
+        if top_image_url:
+            faces.append((safe(card.get("name")) or "Card", top_image_url))
 
-    def load_card_photo(self, row):
+        for face in card.get("card_faces") or []:
+            image_url = self.scryfall_image_url_from_uris(face.get("image_uris"))
+            if image_url:
+                faces.append((safe(face.get("name")) or f"Face {len(faces) + 1}", image_url))
+
+        return faces
+
+    def load_card_photos(self, row):
         scryfall_id = safe(row.get("Scryfall ID"))
         if not scryfall_id:
             raise RuntimeError("This row does not have a Scryfall ID.")
@@ -2185,20 +2195,23 @@ class ManaPoolSellerDashboard:
         if scryfall_id in self.card_image_cache:
             return self.card_image_cache[scryfall_id]
 
-        image_url = self.get_scryfall_card_image_url(scryfall_id)
-        if not image_url:
+        image_faces = self.get_scryfall_card_image_faces(scryfall_id)
+        if not image_faces:
             raise RuntimeError("Scryfall did not return a card image for this row.")
 
         headers = {
             "User-Agent": "ManaPoolSellerDashboard/1.0",
             "Accept": "image/png,image/*;q=0.8,*/*;q=0.5",
         }
-        image_response = requests.get(image_url, headers=headers, timeout=30)
-        image_response.raise_for_status()
-        encoded = base64.b64encode(image_response.content).decode("ascii")
-        photo = tk.PhotoImage(data=encoded)
-        self.card_image_cache[scryfall_id] = photo
-        return photo
+        photos = []
+        for face_name, image_url in image_faces:
+            image_response = requests.get(image_url, headers=headers, timeout=30)
+            image_response.raise_for_status()
+            encoded = base64.b64encode(image_response.content).decode("ascii")
+            photos.append((face_name, tk.PhotoImage(data=encoded)))
+
+        self.card_image_cache[scryfall_id] = photos
+        return photos
 
     def view_selected_card_image(self):
         row = self.selected_row_for_card_image()
@@ -2207,7 +2220,7 @@ class ManaPoolSellerDashboard:
             return
 
         try:
-            photo = self.load_card_photo(row)
+            photos = self.load_card_photos(row)
         except Exception as exc:
             self.log_output(f"Card image failed: {exc}")
             messagebox.showerror("Card Image Error", str(exc))
@@ -2219,12 +2232,38 @@ class ManaPoolSellerDashboard:
         window.resizable(False, False)
         window.transient(self.root)
 
+        current_face = {"index": 0}
+        face_name, photo = photos[0]
         image_label = tk.Label(window, image=photo, bg="#111827")
         image_label.image = photo
         image_label.pack(padx=12, pady=(12, 6))
 
-        title = f"{safe(row.get('Name'))} - {safe(row.get('Set code'))} #{safe(row.get('Collector number'))}"
-        tk.Label(window, text=title, bg="#111827", fg="#f9fafb", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(0, 12))
+        title_var = tk.StringVar()
+        title_label = tk.Label(window, textvariable=title_var, bg="#111827", fg="#f9fafb", font=("Segoe UI", 10, "bold"))
+        title_label.pack(padx=12, pady=(0, 6))
+
+        def update_face():
+            face_name, photo = photos[current_face["index"]]
+            image_label.configure(image=photo)
+            image_label.image = photo
+            title = f"{face_name} - {safe(row.get('Set code'))} #{safe(row.get('Collector number'))}"
+            if len(photos) > 1:
+                title += f" ({current_face['index'] + 1}/{len(photos)})"
+            title_var.set(title)
+
+        def flip_face():
+            current_face["index"] = (current_face["index"] + 1) % len(photos)
+            update_face()
+
+        if len(photos) > 1:
+            controls = tk.Frame(window, bg="#111827")
+            controls.pack(padx=12, pady=(0, 12))
+            self.button(controls, "Flip", flip_face, tooltip="Show the other side of this card.").pack(side=tk.LEFT)
+            window.bind("<space>", lambda *_: flip_face())
+        else:
+            tk.Frame(window, bg="#111827", height=6).pack()
+
+        update_face()
 
         window.update_idletasks()
         x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - (window.winfo_width() // 2)

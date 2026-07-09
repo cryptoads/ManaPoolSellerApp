@@ -532,7 +532,7 @@ The inventory table supports quick row edits:
 | Double-click `Sell Quantity` | Edit how many copies are selected for the next listing push |
 | Double-click `List Price` | Edit the price to push |
 | Double-click `Condition` | Choose the ManaPool condition for that row |
-| Right-click -> View card image | Open a Scryfall card image popup for the selected row |
+| Right-click -> View card image | Open a Scryfall card image popup for the selected row; double-faced cards include a Flip button |
 | Right-click -> Adjust quantity owned | Change owned quantity without recording a sale |
 | Right-click -> Change grading for one copy | Move one owned copy into a new condition row |
 | Right-click -> Change card/set details | Change the card printing or set identity for a row |
@@ -716,7 +716,7 @@ Search and rarity filters apply to the sold table too, so the analytics update f
 
 Tracking-only ManaPool imports are added to `Sold Inventory` and appear in this table. They do not adjust active inventory.
 
-Double-click a sold row, or right-click and choose `View card image`, to open a Scryfall image popup for that card.
+Double-click a sold row, or right-click and choose `View card image`, to open a Scryfall image popup for that card. Double-faced cards include a `Flip` button.
 
 Use `Remove Sold` when a sold record should no longer count because of a cancellation, return, lost package, or correction. You can remove one or more selected sold rows.
 
