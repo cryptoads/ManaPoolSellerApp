@@ -1,5 +1,6 @@
 import json
 import os
+import base64
 from datetime import datetime
 from pathlib import Path
 
@@ -820,6 +821,7 @@ class ManaPoolSellerDashboard:
         self.sort_column = None
         self.sort_reverse = False
         self.context_row_id = None
+        self.card_image_cache = {}
 
         self.build_styles()
         self.build_ui()
@@ -1071,6 +1073,7 @@ class ManaPoolSellerDashboard:
         self.configure_table()
 
         self.table_menu = tk.Menu(self.root, tearoff=0)
+        self.table_menu.add_command(label="View card image", command=self.view_selected_card_image)
         self.table_menu.add_command(label="Adjust quantity owned", command=self.adjust_selected_quantity_owned)
         self.table_menu.add_command(label="Change card/set details", command=self.change_card_set_details)
         self.table_menu.add_command(label="Change grading for one copy", command=self.split_one_copy_to_condition)
@@ -1152,6 +1155,7 @@ class ManaPoolSellerDashboard:
 
     def handle_double_click(self, event):
         if self.active_view == "sold":
+            self.view_selected_card_image()
             return
 
         region = self.tree.identify("region", event.x, event.y)
@@ -1173,9 +1177,6 @@ class ManaPoolSellerDashboard:
             self.toggle_selected_row()
 
     def show_table_context_menu(self, event):
-        if self.active_view == "sold":
-            return
-
         row_id = self.tree.identify_row(event.y)
         if not row_id:
             return
@@ -1185,7 +1186,18 @@ class ManaPoolSellerDashboard:
         self.context_row_id = row_id
 
         idx = int(row_id)
+        if self.active_view == "sold":
+            self.table_menu.entryconfig("View card image", state=tk.NORMAL)
+            self.table_menu.entryconfig("Adjust quantity owned", state=tk.DISABLED)
+            self.table_menu.entryconfig("Change card/set details", state=tk.DISABLED)
+            self.table_menu.entryconfig("Change grading for one copy", state=tk.DISABLED)
+            self.table_menu.tk_popup(event.x_root, event.y_root)
+            self.table_menu.grab_release()
+            return
+
         can_split = safe_int(self.df.at[idx, "Quantity Owned"]) > 1
+        self.table_menu.entryconfig("View card image", state=tk.NORMAL)
+        self.table_menu.entryconfig("Adjust quantity owned", state=tk.NORMAL)
         self.table_menu.entryconfig("Change card/set details", state=tk.NORMAL)
         self.table_menu.entryconfig(
             "Change grading for one copy",
@@ -2132,6 +2144,84 @@ class ManaPoolSellerDashboard:
         self.sold_gross_var.set(f"${gross.sum():,.2f}")
         self.sold_profit_var.set(f"${profit.sum():,.2f}")
         self.sold_top_set_var.set(top_set)
+
+    def selected_row_for_card_image(self):
+        row_id = self.context_row_id or self.tree.focus()
+        if not row_id:
+            return None
+
+        idx = int(row_id)
+        if self.active_view == "sold":
+            if idx not in self.sold_df.index:
+                return None
+            return self.sold_df.loc[idx]
+
+        if idx not in self.df.index:
+            return None
+        return self.df.loc[idx]
+
+    def get_scryfall_card_image_url(self, scryfall_id):
+        card_url = f"https://api.scryfall.com/cards/{scryfall_id}"
+        result = requests.get(card_url, timeout=20)
+        result.raise_for_status()
+        card = result.json()
+
+        image_uris = card.get("image_uris")
+        if not image_uris and card.get("card_faces"):
+            image_uris = card["card_faces"][0].get("image_uris")
+        if not image_uris:
+            return ""
+        return image_uris.get("png") or image_uris.get("normal") or image_uris.get("large") or image_uris.get("small") or ""
+
+    def load_card_photo(self, row):
+        scryfall_id = safe(row.get("Scryfall ID"))
+        if not scryfall_id:
+            raise RuntimeError("This row does not have a Scryfall ID.")
+
+        if scryfall_id in self.card_image_cache:
+            return self.card_image_cache[scryfall_id]
+
+        image_url = self.get_scryfall_card_image_url(scryfall_id)
+        if not image_url:
+            raise RuntimeError("Scryfall did not return a card image for this row.")
+
+        image_response = requests.get(image_url, timeout=30)
+        image_response.raise_for_status()
+        encoded = base64.b64encode(image_response.content).decode("ascii")
+        photo = tk.PhotoImage(data=encoded)
+        self.card_image_cache[scryfall_id] = photo
+        return photo
+
+    def view_selected_card_image(self):
+        row = self.selected_row_for_card_image()
+        if row is None:
+            messagebox.showwarning("No Row Selected", "Select a card row first.")
+            return
+
+        try:
+            photo = self.load_card_photo(row)
+        except Exception as exc:
+            self.log_output(f"Card image failed: {exc}")
+            messagebox.showerror("Card Image Error", str(exc))
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title(safe(row.get("Name")) or "Card Image")
+        window.configure(bg="#111827")
+        window.resizable(False, False)
+        window.transient(self.root)
+
+        image_label = tk.Label(window, image=photo, bg="#111827")
+        image_label.image = photo
+        image_label.pack(padx=12, pady=(12, 6))
+
+        title = f"{safe(row.get('Name'))} - {safe(row.get('Set code'))} #{safe(row.get('Collector number'))}"
+        tk.Label(window, text=title, bg="#111827", fg="#f9fafb", font=("Segoe UI", 10, "bold")).pack(padx=12, pady=(0, 12))
+
+        window.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() // 2) - (window.winfo_width() // 2)
+        y = self.root.winfo_rooty() + 40
+        window.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
     def inventory_row_from_sold_row(self, sold_row, now):
         qty = safe_int(sold_row.get("Quantity Sold"))
