@@ -1,6 +1,8 @@
 import json
 import os
 import base64
+import queue
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -850,9 +852,13 @@ class ManaPoolSellerDashboard:
         self.card_image_cache = {}
         self.filter_after_id = None
         self.table_mode = None
+        self.action_buttons = []
+        self.active_tasks = 0
+        self.task_queue = queue.Queue()
 
         self.build_styles()
         self.build_ui()
+        self.root.after(100, self.process_background_tasks)
         self.root.after(150, self.load_from_google_sheets)
         
 
@@ -918,6 +924,7 @@ class ManaPoolSellerDashboard:
             font=("Segoe UI", 9, "bold"),
         )
         self.add_tooltip(button, tooltip)
+        self.action_buttons.append(button)
         return button
 
     def build_ui(self):
@@ -1112,7 +1119,10 @@ class ManaPoolSellerDashboard:
 
         footer = tk.Frame(self.root, bg="#030712")
         footer.pack(fill=tk.X)
-        tk.Label(footer, textvariable=self.status_var, bg="#030712", fg="#d1d5db", anchor="w").pack(fill=tk.X, padx=10, pady=4)
+        self.busy_progress = ttk.Progressbar(footer, mode="indeterminate", length=150)
+        self.busy_progress.pack(side=tk.RIGHT, padx=10, pady=5)
+        self.busy_progress.stop()
+        tk.Label(footer, textvariable=self.status_var, bg="#030712", fg="#d1d5db", anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10, pady=4)
 
     def metric(self, parent, label, variable):
         frame = tk.Frame(parent, bg="#1f2937", highlightthickness=1, highlightbackground="#374151")
@@ -1286,43 +1296,76 @@ class ManaPoolSellerDashboard:
         ):
             return
 
-        try:
+        selected_indices = list(selected.index)
+
+        def worker():
             payload = self.manapool_api.build_unlist_payload(selected)
 
             if payload.get("warnings"):
-                proceed = messagebox.askyesno(
-                    "Unlist Warnings",
-                    f"{len(payload['warnings'])} selected rows had product mapping warnings.\n\n"
-                    "Only mapped rows can be unlisted reliably.\n\nContinue anyway?"
-                )
-                if not proceed:
-                    return
+                return {"warnings": payload["warnings"], "payload": payload}
 
             result = self.manapool_api.push_inventory(payload)
 
             now = datetime.now().isoformat()
+            df = normalize_ledger_df(self.df.copy())
 
-            for idx in selected.index:
-                self.df.at[idx, "Is Listed"] = "FALSE"
-                self.df.at[idx, "Quantity Listed"] = "0"
-                self.df.at[idx, "Listed Price"] = ""
-                self.df.at[idx, "Listed Price Updated"] = now
-                self.df.at[idx, "Selling"] = "FALSE"
-                self.df.at[idx, "Sell Quantity"] = "0"
-                self.df.at[idx, "Last Updated"] = now
+            for idx in selected_indices:
+                df.at[idx, "Is Listed"] = "FALSE"
+                df.at[idx, "Quantity Listed"] = "0"
+                df.at[idx, "Listed Price"] = ""
+                df.at[idx, "Listed Price Updated"] = now
+                df.at[idx, "Selling"] = "FALSE"
+                df.at[idx, "Sell Quantity"] = "0"
+                df.at[idx, "Last Updated"] = now
 
-            self.df = normalize_ledger_df(self.df)
-            self.sheets.write_inventory(self.df)
+            df = normalize_ledger_df(df)
+            self.sheets.write_inventory(df)
+            return {"df": df, "result": result, "count": len(selected_indices)}
+
+        def push_after_warning(payload):
+            def push_worker():
+                result = self.manapool_api.push_inventory(payload)
+                now = datetime.now().isoformat()
+                df = normalize_ledger_df(self.df.copy())
+                for idx in selected_indices:
+                    df.at[idx, "Is Listed"] = "FALSE"
+                    df.at[idx, "Quantity Listed"] = "0"
+                    df.at[idx, "Listed Price"] = ""
+                    df.at[idx, "Listed Price Updated"] = now
+                    df.at[idx, "Selling"] = "FALSE"
+                    df.at[idx, "Sell Quantity"] = "0"
+                    df.at[idx, "Last Updated"] = now
+                df = normalize_ledger_df(df)
+                self.sheets.write_inventory(df)
+                return {"df": df, "result": result, "count": len(selected_indices)}
+
+            self.run_background_task("Unlisting from ManaPool", push_worker, done, failed)
+
+        def done(result):
+            if result.get("warnings"):
+                proceed = messagebox.askyesno(
+                    "Unlist Warnings",
+                    f"{len(result['warnings'])} selected rows had product mapping warnings.\n\n"
+                    "Only mapped rows can be unlisted reliably.\n\nContinue anyway?"
+                )
+                if proceed:
+                    push_after_warning(result["payload"])
+                else:
+                    self.set_status("Unlist cancelled.")
+                return
+
+            self.df = result["df"]
             self.apply_filters(keep_status=True)
 
             messagebox.showinfo(
                 "Unlist Complete",
-                f"Unlisted {len(selected)} rows from ManaPool."
+                f"Unlisted {result['count']} rows from ManaPool."
             )
 
-        except Exception as exc:
-            self.log_output(f"Unlist Failed: {exc}")
+        def failed(exc):
             messagebox.showerror("Unlist Failed", str(exc))
+
+        self.run_background_task("Unlisting from ManaPool", worker, done, failed)
 
     def edit_cell(self, row_id, column_name):
         idx = int(row_id)
@@ -1418,38 +1461,108 @@ class ManaPoolSellerDashboard:
     def set_status(self, text):
         self.status_var.set(text)
 
+    def set_action_buttons_enabled(self, enabled):
+        state = tk.NORMAL if enabled else tk.DISABLED
+        for button in getattr(self, "action_buttons", []):
+            try:
+                button.configure(state=state)
+            except Exception:
+                pass
+        if hasattr(self, "busy_progress"):
+            if enabled:
+                self.busy_progress.stop()
+            else:
+                self.busy_progress.start(12)
+
+    def run_background_task(self, label, worker, on_success=None, on_error=None):
+        if self.active_tasks == 0:
+            self.set_action_buttons_enabled(False)
+        self.active_tasks += 1
+        self.set_status(f"{label}...")
+
+        def run():
+            try:
+                result = worker()
+                self.task_queue.put(("success", label, result, on_success, on_error))
+            except Exception as exc:
+                self.task_queue.put(("error", label, exc, on_success, on_error))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def process_background_tasks(self):
+        try:
+            while True:
+                status, label, result, on_success, on_error = self.task_queue.get_nowait()
+                self.active_tasks = max(0, self.active_tasks - 1)
+                if self.active_tasks == 0:
+                    self.set_action_buttons_enabled(True)
+
+                if status == "success":
+                    try:
+                        if on_success:
+                            on_success(result)
+                        else:
+                            self.set_status(f"{label} complete.")
+                    except Exception as exc:
+                        self.log_output(f"{label} completion failed: {exc}")
+                        messagebox.showerror(label, str(exc))
+                        self.set_status(f"{label} completion failed.")
+                else:
+                    self.log_output(f"{label} failed: {result}")
+                    if on_error:
+                        on_error(result)
+                    else:
+                        messagebox.showerror(label, str(result))
+                    self.set_status(f"{label} failed.")
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.process_background_tasks)
+
     # ---------- Data loading ----------
     def load_from_google_sheets(self):
-        try:
-            self.df = self.sheets.read_inventory()
-            self.load_sold_history(show_status=False)
+        def worker():
+            return self.sheets.read_inventory(), self.sheets.read_sold_inventory()
+
+        def done(result):
+            self.df, self.sold_df = result
             self.apply_filters()
             self.set_status(f"Loaded {len(self.df)} rows from Google Sheets.")
-        except Exception as exc:
-            self.log_output(f"Google Sheets Load Error: {exc}")
-            self.set_status("Could not load Google Sheets inventory.")
+
+        self.run_background_task("Loading Google Sheets", worker, done)
 
     def load_sold_history(self, show_status=True):
-        try:
-            self.sold_df = self.sheets.read_sold_inventory()
+        def worker():
+            return self.sheets.read_sold_inventory()
+
+        def done(sold_df):
+            self.sold_df = sold_df
             if self.active_view == "sold":
                 self.apply_filters(keep_status=True)
             else:
                 self.update_sold_metrics()
             if show_status:
                 self.set_status(f"Loaded {len(self.sold_df)} sold rows.")
-        except Exception as exc:
-            self.log_output(f"Sold Inventory Load Error: {exc}")
+
+        def failed(exc):
             if show_status:
                 messagebox.showerror("Sold Inventory Load Error", str(exc))
 
+        self.run_background_task("Loading sold history", worker, done, failed)
+
     def sync_sheets(self):
-        try:
-            self.sheets.write_inventory(self.df)
+        df = self.df.copy()
+
+        def worker():
+            self.sheets.write_inventory(df)
+
+        def done(_):
             self.set_status("Synced inventory to Google Sheets.")
-        except Exception as exc:
-            self.log_output(f"Google Sheets Sync Error: {exc}")
+
+        def failed(exc):
             messagebox.showerror("Google Sheets Error", str(exc))
+
+        self.run_background_task("Syncing Google Sheets", worker, done, failed)
 
     def review_sold_import(self):
         as_of_text = self.sold_import_as_of_var.get().strip()
@@ -1459,23 +1572,25 @@ class ManaPoolSellerDashboard:
             messagebox.showerror("Invalid Date", "Use YYYY-MM-DD for the sold import as-of date.")
             return
 
-        try:
+        def worker():
             imported_ids = self.sheets.read_sold_import_ids("manapool")
             result = self.manapool_api.get_seller_orders(limit=100)
             orders = self.expand_manapool_orders(result)
-            sales = self.extract_manapool_sales(orders, as_of_date, imported_ids)
-        except Exception as exc:
-            self.log_output(f"Sold Import Review Error: {exc}")
+            return self.extract_manapool_sales(orders, as_of_date, imported_ids)
+
+        def done(sales):
+            if not sales:
+                messagebox.showinfo("Sold Import Review", "No new ManaPool sold cards were found to review.")
+                self.set_status("No new ManaPool sold cards found.")
+                return
+
+            self.show_sold_import_review(sales)
+            self.set_status(f"Loaded {len(sales)} ManaPool sold cards for review.")
+
+        def failed(exc):
             messagebox.showerror("Sold Import Review Error", str(exc))
-            return
 
-        if not sales:
-            messagebox.showinfo("Sold Import Review", "No new ManaPool sold cards were found to review.")
-            self.set_status("No new ManaPool sold cards found.")
-            return
-
-        self.show_sold_import_review(sales)
-        self.set_status(f"Loaded {len(sales)} ManaPool sold cards for review.")
+        self.run_background_task("Reviewing ManaPool sold cards", worker, done, failed)
 
     def first_value(self, data, keys, default=""):
         if not isinstance(data, dict):
@@ -1537,8 +1652,7 @@ class ManaPoolSellerDashboard:
                 detail = self.manapool_api.get_seller_order(order_id)
                 detail_orders = self.manapool_order_list(detail)
                 orders.append(detail_orders[0] if detail_orders else order)
-            except Exception as exc:
-                self.log_output(f"Could not load ManaPool order detail {order_id}: {exc}")
+            except Exception:
                 orders.append(order)
 
         return orders
@@ -1964,7 +2078,29 @@ class ManaPoolSellerDashboard:
         return row
     
     def sync_from_manapool(self):
-        try:
+        base_df = self.df.copy()
+
+        def matching_index(df, mp_row):
+            target_scryfall = safe(mp_row.get("Scryfall ID")).lower()
+            target_finish = safe(mp_row.get("Foil")).lower()
+            target_condition = safe(mp_row.get("Condition")).lower()
+            target_language = safe(mp_row.get("Language")).lower()
+            target_set = safe(mp_row.get("Set code")).lower()
+            target_number = safe_collector_number(mp_row.get("Collector number")).lower()
+
+            for idx, row in df.iterrows():
+                if (
+                    safe(row.get("Scryfall ID")).lower() == target_scryfall
+                    and safe(row.get("Foil")).lower() == target_finish
+                    and safe(row.get("Condition")).lower() == target_condition
+                    and safe(row.get("Language")).lower() == target_language
+                    and safe(row.get("Set code")).lower() == target_set
+                    and safe_collector_number(row.get("Collector number")).lower() == target_number
+                ):
+                    return idx
+            return None
+
+        def worker():
             result = self.manapool_api.get_seller_inventory()
 
             raw_items = (
@@ -1978,16 +2114,12 @@ class ManaPoolSellerDashboard:
                 raw_items = list(raw_items.values())
 
             now = datetime.now().isoformat()
-            self.df = normalize_ledger_df(self.df)
-
-            existing_by_key = {
-                safe(row.get("Key")): idx
-                for idx, row in self.df.iterrows()
-            }
+            df = normalize_ledger_df(base_df)
 
             added = 0
             updated = 0
             skipped = 0
+            log_lines = []
 
             for item in raw_items:
                 try:
@@ -2001,38 +2133,45 @@ class ManaPoolSellerDashboard:
                         skipped += 1
                         continue
 
-                    matched_idx = self.find_matching_inventory_index(mp_row)
+                    matched_idx = matching_index(df, mp_row)
 
                     if matched_idx is not None:
                         idx = matched_idx
 
-                        self.df.at[idx, "Is Listed"] = mp_row["Is Listed"]
-                        self.df.at[idx, "Quantity Listed"] = mp_row["Quantity Listed"]
-                        self.df.at[idx, "Listed Price"] = mp_row["Listed Price"]
-                        self.df.at[idx, "List Price"] = mp_row["Listed Price"]
-                        self.df.at[idx, "ManaPool Product ID"] = mp_row["ManaPool Product ID"]
-                        self.df.at[idx, "TCGPlayer Product ID"] = mp_row["TCGPlayer Product ID"]
-                        self.df.at[idx, "TCGPlayer SKU"] = mp_row["TCGPlayer SKU"]
-                        self.df.at[idx, "Listed Price Updated"] = now
-                        self.df.at[idx, "Last Updated"] = now
+                        df.at[idx, "Is Listed"] = mp_row["Is Listed"]
+                        df.at[idx, "Quantity Listed"] = mp_row["Quantity Listed"]
+                        df.at[idx, "Listed Price"] = mp_row["Listed Price"]
+                        df.at[idx, "List Price"] = mp_row["Listed Price"]
+                        df.at[idx, "ManaPool Product ID"] = mp_row["ManaPool Product ID"]
+                        df.at[idx, "TCGPlayer Product ID"] = mp_row["TCGPlayer Product ID"]
+                        df.at[idx, "TCGPlayer SKU"] = mp_row["TCGPlayer SKU"]
+                        df.at[idx, "Listed Price Updated"] = now
+                        df.at[idx, "Last Updated"] = now
 
                         updated += 1
 
                     else:
                         mp_row["Last Imported"] = now
                         mp_row["Last Updated"] = now
-                        self.df = pd.concat([self.df, pd.DataFrame([mp_row])], ignore_index=True)
+                        df = pd.concat([df, pd.DataFrame([mp_row])], ignore_index=True)
                         added += 1
 
                 except Exception as row_exc:
                     skipped += 1
-                    self.log_output(f"ManaPool sync skipped row: {row_exc}")
+                    log_lines.append(f"ManaPool sync skipped row: {row_exc}")
 
-            self.df = normalize_ledger_df(self.df)
-            self.sheets.write_inventory(self.df)
-            self.load_sold_history(show_status=False)
+            df = normalize_ledger_df(df)
+            self.sheets.write_inventory(df)
+            sold_df = self.sheets.read_sold_inventory()
+            return df, sold_df, updated, added, skipped, log_lines
+
+        def done(result):
+            df, sold_df, updated, added, skipped, log_lines = result
+            self.df = df
+            self.sold_df = sold_df
+            for line in log_lines:
+                self.log_output(line)
             self.apply_filters(keep_status=True)
-
             messagebox.showinfo(
                 "ManaPool Sync Complete",
                 f"Updated existing rows: {updated}\n"
@@ -2040,9 +2179,10 @@ class ManaPoolSellerDashboard:
                 f"Skipped rows: {skipped}"
             )
 
-        except Exception as exc:
-            self.log_output(f"ManaPool Sync Error: {exc}")
+        def failed(exc):
             messagebox.showerror("ManaPool Sync Error", str(exc))
+
+        self.run_background_task("Syncing ManaPool inventory", worker, done, failed)
 
     # ---------- Table rendering ----------
     def schedule_apply_filters(self, delay_ms=220):
@@ -2991,32 +3131,48 @@ class ManaPoolSellerDashboard:
     def refresh_best_prices(self):
         if self.df.empty:
             return
-        now = datetime.now().isoformat()
-        updated = 0
-        failed = 0
-        self.df = normalize_ledger_df(self.df)
-        for idx, row in self.df.iterrows():
-            # Refresh selected or already-listed rows only.
-            if not bool_from_value(row.get("Selling")):
-                continue
-            try:
-                result = self.manapool_api.get_best_price_for_row(row)
-                if not result:
-                    failed += 1
+        base_df = self.df.copy()
+
+        def worker():
+            now = datetime.now().isoformat()
+            updated = 0
+            failed = 0
+            log_lines = []
+            df = normalize_ledger_df(base_df)
+            for idx, row in df.iterrows():
+                # Refresh selected rows only.
+                if not bool_from_value(row.get("Selling")):
                     continue
-                self.df.at[idx, "Best Price"] = price_text(result["best_price"])
-                self.df.at[idx, "Best Price Updated"] = now
-                self.df.at[idx, "ManaPool Product ID"] = safe(result["product_id"])
-                self.df.at[idx, "TCGPlayer SKU"] = safe(result["tcgplayer_sku"])
-                self.df.at[idx, "TCGPlayer Product ID"] = safe(result["tcgplayer_product_id"])
-                updated += 1
-            except Exception as exc:
-                failed += 1
-                self.log_output(f"Price refresh failed for {safe(row.get('Name'))}: {exc}")
-        self.df = normalize_ledger_df(self.df)
-        self.sheets.write_inventory(self.df)
-        self.apply_filters(keep_status=True)
-        messagebox.showinfo("Best Prices", f"Updated {updated} rows. Failed/skipped {failed} rows.")
+                try:
+                    result = self.manapool_api.get_best_price_for_row(row)
+                    if not result:
+                        failed += 1
+                        continue
+                    df.at[idx, "Best Price"] = price_text(result["best_price"])
+                    df.at[idx, "Best Price Updated"] = now
+                    df.at[idx, "ManaPool Product ID"] = safe(result["product_id"])
+                    df.at[idx, "TCGPlayer SKU"] = safe(result["tcgplayer_sku"])
+                    df.at[idx, "TCGPlayer Product ID"] = safe(result["tcgplayer_product_id"])
+                    updated += 1
+                except Exception as exc:
+                    failed += 1
+                    log_lines.append(f"Price refresh failed for {safe(row.get('Name'))}: {exc}")
+            df = normalize_ledger_df(df)
+            self.sheets.write_inventory(df)
+            return df, updated, failed, log_lines
+
+        def done(result):
+            df, updated, failed, log_lines = result
+            self.df = df
+            for line in log_lines:
+                self.log_output(line)
+            self.apply_filters(keep_status=True)
+            messagebox.showinfo("Best Prices", f"Updated {updated} rows. Failed/skipped {failed} rows.")
+
+        def failed(exc):
+            messagebox.showerror("Best Prices", str(exc))
+
+        self.run_background_task("Refreshing best prices", worker, done, failed)
 
     def calculate_smart_price(self, best_price):
         best = safe_float(best_price)
@@ -3203,57 +3359,87 @@ class ManaPoolSellerDashboard:
             messagebox.showerror("Mark Sold Error", str(exc))
     # ---------- API ----------
     def api_test_connection(self):
-        try:
-            result = self.manapool_api.test_connection()
+        def worker():
+            return self.manapool_api.test_connection()
+
+        def done(result):
             messagebox.showinfo("API Test OK", json.dumps(result, indent=2)[:3000])
-        except Exception as exc:
-            self.log_output(f"API Test Failed: {exc}")
+
+        def failed(exc):
             messagebox.showerror("API Test Failed", str(exc))
+
+        self.run_background_task("Testing ManaPool API", worker, done, failed)
 
     def api_dry_run(self):
         selected = self.selected_for_sale_df()
         if selected.empty:
             messagebox.showwarning("No Cards Ready", "Mark cards as Selling and set Sell Quantity/List Price first.")
             return
-        try:
+
+        path = filedialog.asksaveasfilename(defaultextension=".json", initialfile=f"manapool_payload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+        if not path:
+            return
+
+        def worker():
             payload = self.manapool_api.build_inventory_payload(selected)
-            path = filedialog.asksaveasfilename(defaultextension=".json", initialfile=f"manapool_payload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
             if path:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2)
+            return payload
+
+        def done(payload):
             messagebox.showinfo("Dry Run", f"Prepared {len(payload['items'])} rows. Warnings: {len(payload['warnings'])}")
-        except Exception as exc:
-            self.log_output(f"Dry Run Error: {exc}")
+
+        def failed(exc):
             messagebox.showerror("Dry Run Error", str(exc))
+
+        self.run_background_task("Preparing dry run", worker, done, failed)
 
     def api_push_selected(self):
         selected = self.selected_for_sale_df()
         if selected.empty:
             messagebox.showwarning("No Cards Ready", "Mark cards as Selling and set Sell Quantity/List Price first.")
             return
-        try:
+        selected_indices = list(selected.index)
+
+        def build_worker():
             payload = self.manapool_api.build_inventory_payload(selected)
+            return payload
+
+        def build_done(payload):
             if payload.get("warnings"):
                 if not messagebox.askyesno("Warnings", "Some rows could not be matched. Continue anyway?"):
+                    self.set_status("Push cancelled.")
                     return
             if not messagebox.askyesno("Confirm Push", f"Push {len(payload['items'])} listings to ManaPool?"):
+                self.set_status("Push cancelled.")
                 return
+            self.run_background_task("Pushing listings to ManaPool", lambda: push_worker(payload), push_done, push_failed)
+
+        def push_worker(payload):
             result = self.manapool_api.push_inventory(payload)
             now = datetime.now().isoformat()
-            self.df = normalize_ledger_df(self.df)
-            for idx in selected.index:
-                self.df.at[idx, "Is Listed"] = "TRUE"
-                self.df.at[idx, "Quantity Listed"] = str(safe_int(self.df.at[idx, "Sell Quantity"]))
-                self.df.at[idx, "Listed Price"] = price_text(self.df.at[idx, "List Price"])
-                self.df.at[idx, "Listed Price Updated"] = now
-                self.df.at[idx, "Last Listed"] = now
-                self.df.at[idx, "Last Updated"] = now
-            self.sheets.write_inventory(self.df)
+            df = normalize_ledger_df(self.df.copy())
+            for idx in selected_indices:
+                df.at[idx, "Is Listed"] = "TRUE"
+                df.at[idx, "Quantity Listed"] = str(safe_int(df.at[idx, "Sell Quantity"]))
+                df.at[idx, "Listed Price"] = price_text(df.at[idx, "List Price"])
+                df.at[idx, "Listed Price Updated"] = now
+                df.at[idx, "Last Listed"] = now
+                df.at[idx, "Last Updated"] = now
+            self.sheets.write_inventory(df)
+            return df, result
+
+        def push_done(result):
+            df, api_result = result
+            self.df = df
             self.apply_filters(keep_status=True)
-            messagebox.showinfo("Push Complete", json.dumps(result, indent=2)[:3000])
-        except Exception as exc:
-            self.log_output(f"API Push Failed: {exc}")
+            messagebox.showinfo("Push Complete", json.dumps(api_result, indent=2)[:3000])
+
+        def push_failed(exc):
             messagebox.showerror("API Push Failed", str(exc))
+
+        self.run_background_task("Preparing ManaPool push", build_worker, build_done, push_failed)
 
 
 if __name__ == "__main__":
