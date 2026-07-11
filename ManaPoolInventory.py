@@ -524,6 +524,32 @@ class SheetsClient:
         if not df.empty:
             sold_sheet.append_rows(df[SOLD_COLUMNS].values.tolist())
 
+    def update_sheet_rows(self, worksheet, df, columns, indices):
+        if not self.enabled:
+            raise RuntimeError(self.error or "Google Sheets is not connected.")
+        if df.empty:
+            return
+
+        index_positions = {idx: position for position, idx in enumerate(df.index)}
+        last_col = spreadsheet_column_name(len(columns))
+
+        for idx in indices:
+            if idx not in index_positions or idx not in df.index:
+                continue
+            sheet_row = index_positions[idx] + 2
+            row_values = [safe(df.at[idx, col]) for col in columns]
+            worksheet.update(
+                range_name=f"A{sheet_row}:{last_col}{sheet_row}",
+                values=[row_values],
+            )
+
+    def update_inventory_rows(self, df, indices):
+        self.update_sheet_rows(self.sheet, df.fillna("").astype(str), LEDGER_COLUMNS, indices)
+
+    def update_sold_rows(self, df, indices):
+        sold_sheet = self.get_or_create_worksheet(SOLD_SHEET_NAME)
+        self.update_sheet_rows(sold_sheet, df.fillna("").astype(str), SOLD_COLUMNS, indices)
+
     def get_or_create_worksheet(self, title, rows=1000, cols=30):
         spreadsheet = self.sheet.spreadsheet
 
@@ -2442,7 +2468,7 @@ class ManaPoolSellerDashboard:
             self.sold_df = normalize_sold_df(self.sold_df)
 
             try:
-                self.sheets.write_sold_inventory(self.sold_df)
+                self.sheets.update_sold_rows(self.sold_df, [idx])
                 self.apply_filters(keep_status=True)
                 self.set_status("Updated sold item.")
                 dialog.destroy()
@@ -2702,7 +2728,7 @@ class ManaPoolSellerDashboard:
         self.apply_filters(keep_status=True)
         self.set_status("Updated card/set details. Refresh price before pushing if needed.")
         try:
-            self.sheets.write_inventory(self.df)
+            self.sheets.update_inventory_rows(self.df, [idx])
         except Exception as exc:
             self.log_output(f"Google Sheets Sync Error after card/set change: {exc}")
             messagebox.showwarning(
@@ -2769,13 +2795,17 @@ class ManaPoolSellerDashboard:
             self.df.at[idx, "Selling"] = "FALSE"
         self.df.at[idx, "Last Updated"] = now
 
+        removed_row = new_owned <= 0
         if new_owned <= 0:
             self.df = self.df.drop(index=idx)
 
         self.df = normalize_ledger_df(self.df)
         self.apply_filters(keep_status=True)
         try:
-            self.sheets.write_inventory(self.df)
+            if removed_row:
+                self.sheets.write_inventory(self.df)
+            else:
+                self.sheets.update_inventory_rows(self.df, [idx])
             self.set_status(f"Adjusted Quantity Owned from {current_owned} to {new_owned}.")
         except Exception as exc:
             self.log_output(f"Quantity Owned Sync Error: {exc}")
