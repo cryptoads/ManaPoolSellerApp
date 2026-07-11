@@ -822,6 +822,8 @@ class ManaPoolSellerDashboard:
         self.sort_reverse = False
         self.context_row_id = None
         self.card_image_cache = {}
+        self.filter_after_id = None
+        self.table_mode = None
 
         self.build_styles()
         self.build_ui()
@@ -1037,7 +1039,7 @@ class ManaPoolSellerDashboard:
 
         tk.Label(controls, text="Floor $", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(8, 4))
         tk.Entry(controls, textvariable=self.floor_price_var, width=6).pack(side=tk.LEFT)
-        self.search_var.trace_add("write", lambda *_: self.apply_filters())
+        self.search_var.trace_add("write", lambda *_: self.schedule_apply_filters())
         tk.Label(controls, text="Rarity", bg="#111827", fg="#d1d5db").pack(side=tk.LEFT, padx=(12, 4))
         rarity = ttk.Combobox(controls, textvariable=self.rarity_var, width=11, values=["All", "common", "uncommon", "rare", "mythic"], state="readonly")
         rarity.pack(side=tk.LEFT)
@@ -1093,6 +1095,9 @@ class ManaPoolSellerDashboard:
         return frame
 
     def configure_table(self):
+        if self.table_mode == "inventory":
+            return
+        self.table_mode = "inventory"
         self.tree.configure(selectmode="browse")
         widths = {
             "Selling": 65,
@@ -1122,6 +1127,9 @@ class ManaPoolSellerDashboard:
         self.tree.tag_configure("normal", background="#0f172a", foreground="#e5e7eb")
 
     def configure_sold_table(self):
+        if self.table_mode == "sold":
+            return
+        self.table_mode = "sold"
         self.tree.configure(selectmode="extended")
         widths = {
             "Sold At": 150,
@@ -2011,12 +2019,31 @@ class ManaPoolSellerDashboard:
             messagebox.showerror("ManaPool Sync Error", str(exc))
 
     # ---------- Table rendering ----------
+    def schedule_apply_filters(self, delay_ms=220):
+        if self.filter_after_id:
+            self.root.after_cancel(self.filter_after_id)
+        self.filter_after_id = self.root.after(delay_ms, self.run_scheduled_filters)
+
+    def run_scheduled_filters(self):
+        self.filter_after_id = None
+        self.apply_filters()
+
+    def apply_search_filter(self, df, query):
+        if not query or df.empty:
+            return df
+        search_text = df.fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+        return df[search_text.str.contains(query, regex=False, na=False)]
+
     def apply_filters(self, keep_status=False):
+        if self.filter_after_id:
+            self.root.after_cancel(self.filter_after_id)
+            self.filter_after_id = None
+
         if self.active_view == "sold":
-            df = normalize_sold_df(self.sold_df)
+            df = self.sold_df
             query = self.search_var.get().strip().lower()
             if query:
-                df = df[df.apply(lambda row: query in " ".join([safe(v).lower() for v in row.values]), axis=1)]
+                df = self.apply_search_filter(df, query)
             rarity = self.rarity_var.get()
             if rarity != "All":
                 df = df[df["Rarity"].astype(str).str.lower() == rarity.lower()]
@@ -2028,12 +2055,12 @@ class ManaPoolSellerDashboard:
                 self.set_status(f"Showing {len(self.filtered_sold_df)} of {len(self.sold_df)} sold rows.")
             return
 
-        df = normalize_ledger_df(self.df)
+        df = self.df
         if self.active_view == "listed":
             df = df[df["Quantity Listed"].apply(safe_int) > 0]
         query = self.search_var.get().strip().lower()
         if query:
-            df = df[df.apply(lambda row: query in " ".join([safe(v).lower() for v in row.values]), axis=1)]
+            df = self.apply_search_filter(df, query)
         rarity = self.rarity_var.get()
         if rarity != "All":
             df = df[df["Rarity"].astype(str).str.lower() == rarity.lower()]
